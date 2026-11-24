@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+      <!-- Ears -->
+      <ellipse cx="55" cy="38" rx="12" ry="32" fill="#fff" transform="rotate(-10 55 38)"/>
+      <ellipse cx="55" cy="38" rx="6" ry="22" fill="#fbcfe8" transform="rotate(-10 55 38)"/>
+      <ellipse cx="105" cy="38" rx="12" ry="32" fill="#fff" transform="rotate(10 105 38)"/>
+      <ellipse cx="105" cy="38" rx="6" ry="22" fill="#fbcfe8" transform="rotate(10 105 38)"/>
+      <!-- Face -->
+      <circle cx="80" cy="95" r="50" fill="#fff"/>
+      <!-- Cheeks -->
+      <circle cx="48" cy="106" r="9" fill="#f43f5e" opacity="0.4"/>
+      <circle cx="112" cy="106" r="9" fill="#f43f5e" opacity="0.4"/>
+      <!-- Happy Arc Eyes -->
+      <path d="M 52 92 Q 60 84 68 92" stroke="#1e293b" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <path d="M 92 92 Q 100 84 108 92" stroke="#1e293b" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <!-- Nose & Mouth -->
+      <ellipse cx="80" cy="101" rx="4" ry="3" fill="#f472b6"/>
+      <path d="M 76 105 Q 80 110 80 105 Q 80 110 84 105" stroke="#1e293b" stroke-width="2" fill="none" stroke-linecap="round"/>
+    </svg>

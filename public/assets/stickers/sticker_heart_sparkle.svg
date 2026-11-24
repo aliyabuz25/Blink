@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+      <defs>
+        <radialGradient id="hGrad" cx="40%" cy="35%" r="60%">
+          <stop offset="0%" stop-color="#ff4b72"/>
+          <stop offset="100%" stop-color="#dc2626"/>
+        </radialGradient>
+      </defs>
+      <path d="M 80,135 C 35,95 20,70 20,48 C 20,28 36,15 54,15 C 67,15 75,22 80,30 C 85,22 93,15 106,15 C 124,15 140,28 140,48 C 140,70 125,95 80,135 Z" fill="url(#hGrad)"/>
+      <!-- Sparkles -->
+      <polygon points="125,18 128,26 136,29 128,32 125,40 122,32 114,29 122,26" fill="#fef08a"/>
+      <polygon points="35,100 37,105 42,107 37,109 35,114 33,109 28,107 33,105" fill="#fef08a"/>
+      <ellipse cx="60" cy="35" rx="14" ry="6" fill="#fff" opacity="0.35" transform="rotate(-30 60 35)"/>
+    </svg>

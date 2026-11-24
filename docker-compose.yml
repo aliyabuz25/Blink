@@ -1,0 +1,38 @@
+services:
+  blink-backend:
+    container_name: blink-backend
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: blink-backend:latest
+    pull_policy: build
+    restart: unless-stopped
+    expose:
+      - "3000"
+    environment:
+      PORT: "3000"
+      NODE_ENV: "production"
+      JWT_SECRET: "change_this_to_a_long_random_secret_min_32_chars"
+      SITE_URL: "https://blink.octotech.az"
+      ALLOWED_ORIGINS: "https://blink.octotech.az,http://blink.octotech.az,https://blink.octotechaz,http://blink.octotechaz"
+      DB_PATH: "/app/data/blink.db"
+      UPLOADS_DIR: "/app/uploads"
+    volumes:
+      - /datastore/blink/uploads:/app/uploads
+      - /datastore/blink/data:/app/data
+    networks:
+      - edge
+      - octobot-net
+    labels:
+      - 'traefik.enable=true'
+      - 'traefik.docker.network=edge'
+      - 'traefik.http.routers.blink.rule=Host(`blink.octotech.az`) || Host(`blink.octotechaz`)'
+      - 'traefik.http.routers.blink.entrypoints=web,websecure'
+      - 'traefik.http.routers.blink.tls=true'
+      - 'traefik.http.services.blink.loadbalancer.server.port=3000'
+
+networks:
+  edge:
+    external: true
+  octobot-net:
+    external: true

@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+      <defs>
+        <radialGradient id="babyGrad" cx="45%" cy="40%" r="55%">
+          <stop offset="0%" stop-color="#fed7aa"/>
+          <stop offset="100%" stop-color="#fdba74"/>
+        </radialGradient>
+      </defs>
+      <circle cx="80" cy="85" r="54" fill="url(#babyGrad)"/>
+      <path d="M 76 34 Q 80 20 84 34" stroke="#78350f" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <circle cx="56" cy="80" r="5" fill="#1e293b"/>
+      <circle cx="104" cy="80" r="5" fill="#1e293b"/>
+      <circle cx="48" cy="94" r="9" fill="#f43f5e" opacity="0.4"/>
+      <circle cx="112" cy="94" r="9" fill="#f43f5e" opacity="0.4"/>
+      <path d="M 68 100 Q 80 114 92 100" stroke="#78350f" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <ellipse cx="80" cy="128" rx="28" ry="14" fill="#60a5fa"/>
+    </svg>

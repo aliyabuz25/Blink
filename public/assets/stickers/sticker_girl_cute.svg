@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+      <!-- Hair back -->
+      <circle cx="80" cy="82" r="56" fill="#332211"/>
+      <!-- Face -->
+      <circle cx="80" cy="88" r="48" fill="#ffe4cc"/>
+      <!-- Hair bangs -->
+      <path d="M 36 70 Q 80 50 124 70 Q 110 50 80 52 Q 50 50 36 70 Z" fill="#332211"/>
+      <circle cx="60" cy="88" r="5" fill="#1e293b"/>
+      <circle cx="100" cy="88" r="5" fill="#1e293b"/>
+      <circle cx="52" cy="98" r="7" fill="#f43f5e" opacity="0.4"/>
+      <circle cx="108" cy="98" r="7" fill="#f43f5e" opacity="0.4"/>
+      <path d="M 72 106 Q 80 114 88 106" stroke="#c2410c" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <!-- Hair clip flower -->
+      <circle cx="116" cy="62" r="7" fill="#fbbf24"/>
+      <circle cx="116" cy="62" r="3" fill="#fff"/>
+    </svg>
