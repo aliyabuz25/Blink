@@ -328,6 +328,43 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Screen Sharing & Media Signaling Events
+  socket.on('webrtc_screenshare_started', (data) => {
+    if (data.targetUserId) {
+      socket.to(`user_${data.targetUserId}`).emit('webrtc_screenshare_started', data);
+    }
+    if (data.conversationId) {
+      socket.to(`conv_${data.conversationId}`).emit('webrtc_screenshare_started', data);
+    }
+    if (!data.targetUserId && !data.conversationId) {
+      socket.broadcast.emit('webrtc_screenshare_started', data);
+    }
+  });
+
+  socket.on('webrtc_screenshare_stopped', (data) => {
+    if (data.targetUserId) {
+      socket.to(`user_${data.targetUserId}`).emit('webrtc_screenshare_stopped', data);
+    }
+    if (data.conversationId) {
+      socket.to(`conv_${data.conversationId}`).emit('webrtc_screenshare_stopped', data);
+    }
+    if (!data.targetUserId && !data.conversationId) {
+      socket.broadcast.emit('webrtc_screenshare_stopped', data);
+    }
+  });
+
+  socket.on('webrtc_renegotiate', (data) => {
+    if (data.targetUserId) {
+      socket.to(`user_${data.targetUserId}`).emit('webrtc_renegotiate', data);
+    }
+    if (data.conversationId) {
+      socket.to(`conv_${data.conversationId}`).emit('webrtc_renegotiate', data);
+    }
+    if (!data.targetUserId && !data.conversationId) {
+      socket.broadcast.emit('webrtc_renegotiate', data);
+    }
+  });
+
   // Disconnection cleanup
   socket.on('disconnect', async () => {
     if (socket.userId) {
