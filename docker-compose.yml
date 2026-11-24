@@ -15,14 +15,16 @@ services:
       JWT_SECRET: "change_this_to_a_long_random_secret_min_32_chars"
       SITE_URL: "https://blink.octotech.az"
       ALLOWED_ORIGINS: "https://blink.octotech.az,http://blink.octotech.az,https://blink.octotechaz,http://blink.octotechaz"
-      DB_PATH: "/app/data/blink.db"
+      DATABASE_URL: "postgres://blink_user:blink_secure_pass_2026@blink-postgres:5432/blink_db"
       UPLOADS_DIR: "/app/uploads"
     volumes:
       - /datastore/blink/uploads:/app/uploads
-      - /datastore/blink/data:/app/data
     networks:
       - edge
       - octobot-net
+    depends_on:
+      blink-postgres:
+        condition: service_healthy
     labels:
       - 'traefik.enable=true'
       - 'traefik.docker.network=edge'
@@ -30,6 +32,24 @@ services:
       - 'traefik.http.routers.blink.entrypoints=web,websecure'
       - 'traefik.http.routers.blink.tls=true'
       - 'traefik.http.services.blink.loadbalancer.server.port=3000'
+
+  blink-postgres:
+    container_name: blink-postgres
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: blink_user
+      POSTGRES_PASSWORD: blink_secure_pass_2026
+      POSTGRES_DB: blink_db
+    volumes:
+      - /datastore/blink/postgres_data:/var/lib/postgresql/data
+    networks:
+      - octobot-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U blink_user -d blink_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 
 networks:
   edge:

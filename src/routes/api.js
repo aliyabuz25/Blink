@@ -489,7 +489,7 @@ router.get('/conversations', async (req, res) => {
         END as last_seen,
         c.is_group, c.is_favorite,
         (
-          SELECT json_object('content', m.content, 'created_at', m.created_at, 'sender_id', m.sender_id, 'status', m.status)
+          SELECT json_build_object('content', m.content, 'created_at', m.created_at, 'sender_id', m.sender_id, 'status', m.status)::text
           FROM messages m
           WHERE m.conversation_id = c.id
           ORDER BY m.created_at DESC
@@ -830,7 +830,7 @@ router.post('/stories/:id/like', async (req, res) => {
 // Calls Log Endpoints
 router.get('/calls', async (req, res) => {
   try {
-    const calls = await all(`SELECT * FROM calls ORDER BY rowid DESC`);
+    const calls = await all(`SELECT * FROM calls ORDER BY created_at DESC`);
     res.json({ calls });
   } catch (err) {
     res.status(500).json({ error: err.message });

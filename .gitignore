@@ -1,9 +1,5 @@
 node_modules/
 .env
-data/*.db
-data/*.db-wal
-data/*.db-shm
-!data/.gitkeep
 uploads/*
 !uploads/avatars/
 !uploads/avatars/.gitkeep

@@ -1,7 +1,7 @@
-# Production-ready Node.js container for Blink Backend (Portainer & Docker optimized)
+# Production-ready Node.js container for Blink Backend (PostgreSQL Mandatory)
 FROM node:22-bookworm-slim
 
-# System dependencies for native modules and CA certificates
+# System certificates and curl for healthchecks
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     curl \
@@ -12,15 +12,15 @@ WORKDIR /app
 # Copy dependency manifests first for Docker layer caching
 COPY package*.json ./
 
-# Install production dependencies (using precompiled binaries for speed and stability in Portainer)
+# Install production dependencies (Pure JavaScript - 0 native C++ compile steps)
 RUN npm install --omit=dev --no-audit --no-fund
 
 # Copy backend source code & assets
 COPY . .
 
-# Ensure standard directories exist and are fully writable in Portainer volume mounts
-RUN mkdir -p /app/data /app/uploads/avatars && \
-    chmod -R 777 /app/data /app/uploads 2>/dev/null || true
+# Ensure upload directory exists and is writable
+RUN mkdir -p /app/uploads/avatars && \
+    chmod -R 777 /app/uploads 2>/dev/null || true
 
 ENV NODE_ENV=production \
     PORT=3000 \

@@ -1,16 +1,16 @@
 #!/bin/bash
 set -e
 
-echo "🚀 [Blink Backend] Deploying container with Docker Compose..."
+echo "🚀 [Blink Backend] Deploying PostgreSQL & Backend with Docker Compose..."
 
-# Create host mount directories if they do not exist
+# Create host mount directories for PostgreSQL & Uploads
+mkdir -p /datastore/blink/postgres_data 2>/dev/null || true
 mkdir -p /datastore/blink/uploads/avatars 2>/dev/null || true
-mkdir -p /datastore/blink/data 2>/dev/null || true
 
-# Build and start container in detached mode
+# Build and start containers in detached mode
 docker compose up -d --build
 
-echo "✅ [Blink Backend] Container started successfully!"
+echo "✅ [Blink Backend] Containers started successfully!"
 echo "📡 Checking status..."
 docker compose ps
 
