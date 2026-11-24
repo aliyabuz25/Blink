@@ -61,7 +61,7 @@ app.use(express.json({ limit: '20mb' }));
 app.use(express.urlencoded({ extended: true, limit: '20mb' }));
 
 // Static file serving for uploads (avatars, attachments, media)
-const uploadsStaticDir = process.env.UPLOADS_DIR || path.resolve(__dirname, 'uploads');
+let uploadsStaticDir = process.env.UPLOADS_DIR || path.resolve(__dirname, 'uploads');
 try {
   if (!fs.existsSync(uploadsStaticDir)) {
     fs.mkdirSync(uploadsStaticDir, { recursive: true });
@@ -70,7 +70,11 @@ try {
     fs.mkdirSync(path.join(uploadsStaticDir, 'avatars'), { recursive: true });
   }
 } catch (e) {
-  console.warn('⚠️ uploads directory creation notice:', e.message);
+  const os = require('os');
+  uploadsStaticDir = path.join(os.tmpdir(), 'blink', 'uploads');
+  try {
+    fs.mkdirSync(path.join(uploadsStaticDir, 'avatars'), { recursive: true });
+  } catch (err) {}
 }
 app.use('/uploads', express.static(uploadsStaticDir));
 

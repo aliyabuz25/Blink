@@ -22,13 +22,15 @@ const defaultUploadDir = (() => {
 })();
 
 const uploadRoot = defaultUploadDir;
-const uploadDir = path.join(uploadRoot, 'avatars');
+let uploadDir = path.join(uploadRoot, 'avatars');
 try {
   if (!fs.existsSync(uploadDir)) {
     fs.mkdirSync(uploadDir, { recursive: true });
   }
 } catch (e) {
-  console.warn('⚠️ Could not create uploadDir:', e.message);
+  const os = require('os');
+  uploadDir = path.join(os.tmpdir(), 'blink', 'uploads', 'avatars');
+  try { fs.mkdirSync(uploadDir, { recursive: true }); } catch (err) {}
 }
 
 const storage = multer.diskStorage({
