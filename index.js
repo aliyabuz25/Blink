@@ -281,24 +281,51 @@ io.on('connection', (socket) => {
   // WebRTC Audio/Video Call Signaling
   // =========================================================================
   socket.on('webrtc_call', (data) => {
-    if (data.conversationId) socket.to(`conv_${data.conversationId}`).emit('webrtc_incoming_call', data);
-    if (data.targetUserId) socket.to(`user_${data.targetUserId}`).emit('webrtc_incoming_call', data);
-    socket.broadcast.emit('webrtc_incoming_call', data);
+    if (data.targetUserId) {
+      socket.to(`user_${data.targetUserId}`).emit('webrtc_incoming_call', data);
+    }
+    if (data.conversationId) {
+      socket.to(`conv_${data.conversationId}`).emit('webrtc_incoming_call', data);
+    }
+    if (!data.targetUserId && !data.conversationId) {
+      socket.broadcast.emit('webrtc_incoming_call', data);
+    }
   });
 
   socket.on('webrtc_answer', (data) => {
-    if (data.conversationId) socket.to(`conv_${data.conversationId}`).emit('webrtc_answered', data);
-    socket.broadcast.emit('webrtc_answered', data);
+    if (data.targetUserId) {
+      socket.to(`user_${data.targetUserId}`).emit('webrtc_answered', data);
+    }
+    if (data.conversationId) {
+      socket.to(`conv_${data.conversationId}`).emit('webrtc_answered', data);
+    }
+    if (!data.targetUserId && !data.conversationId) {
+      socket.broadcast.emit('webrtc_answered', data);
+    }
   });
 
   socket.on('webrtc_ice_candidate', (data) => {
-    if (data.conversationId) socket.to(`conv_${data.conversationId}`).emit('webrtc_remote_ice', data);
-    socket.broadcast.emit('webrtc_remote_ice', data);
+    if (data.targetUserId) {
+      socket.to(`user_${data.targetUserId}`).emit('webrtc_remote_ice', data);
+    }
+    if (data.conversationId) {
+      socket.to(`conv_${data.conversationId}`).emit('webrtc_remote_ice', data);
+    }
+    if (!data.targetUserId && !data.conversationId) {
+      socket.broadcast.emit('webrtc_remote_ice', data);
+    }
   });
 
   socket.on('webrtc_hangup', (data) => {
-    if (data.conversationId) socket.to(`conv_${data.conversationId}`).emit('webrtc_call_ended', data);
-    socket.broadcast.emit('webrtc_call_ended', data);
+    if (data.targetUserId) {
+      socket.to(`user_${data.targetUserId}`).emit('webrtc_call_ended', data);
+    }
+    if (data.conversationId) {
+      socket.to(`conv_${data.conversationId}`).emit('webrtc_call_ended', data);
+    }
+    if (!data.targetUserId && !data.conversationId) {
+      socket.broadcast.emit('webrtc_call_ended', data);
+    }
   });
 
   // Disconnection cleanup

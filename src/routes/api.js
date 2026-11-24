@@ -372,8 +372,8 @@ router.post('/friends/requests/:id/respond', async (req, res) => {
           `INSERT INTO conversations (id, name, avatar, is_group, is_favorite) VALUES (?, ?, ?, 0, 0)`,
           [convId, sender.name, sender.avatar]
         );
-        await run(`INSERT OR IGNORE INTO conversation_members (conversation_id, user_id) VALUES (?, ?)`, [convId, freq.sender_id]);
-        await run(`INSERT OR IGNORE INTO conversation_members (conversation_id, user_id) VALUES (?, ?)`, [convId, currentId]);
+        await run(`INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?) ON CONFLICT (conversation_id, user_id) DO NOTHING`, [convId, freq.sender_id]);
+        await run(`INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?) ON CONFLICT (conversation_id, user_id) DO NOTHING`, [convId, currentId]);
       }
 
       const now = new Date().toISOString();
@@ -471,6 +471,7 @@ router.get('/conversations', async (req, res) => {
     const conversations = await all(
       `
       SELECT c.id, 
+        other_u.id as peer_user_id,
         CASE 
           WHEN c.is_group = 0 AND other_u.id IS NOT NULL THEN other_u.name 
           ELSE c.name 
@@ -518,6 +519,7 @@ router.get('/conversations', async (req, res) => {
 
       return {
         id: conv.id,
+        peer_user_id: conv.peer_user_id || null,
         name: conv.name,
         avatar: conv.avatar,
         is_group: Boolean(conv.is_group),
