@@ -1,4 +1,20 @@
 const { Pool } = require('pg');
+const crypto = require('crypto');
+
+function hashPassword(password) {
+  const salt = crypto.randomBytes(16).toString('hex');
+  const derived = crypto.scryptSync(String(password), salt, 64).toString('hex');
+  return `${salt}:${derived}`;
+}
+
+function verifyPassword(password, storedHash) {
+  if (!storedHash || !storedHash.includes(':')) return false;
+  const [salt, key] = storedHash.split(':');
+  const derived = crypto.scryptSync(String(password), salt, 64);
+  const keyBuf = Buffer.from(key, 'hex');
+  if (derived.length !== keyBuf.length) return false;
+  return crypto.timingSafeEqual(derived, keyBuf);
+}
 
 const DATABASE_URL =
   process.env.DATABASE_URL ||
@@ -159,6 +175,40 @@ async function initDatabase() {
     );
   `);
 
+  // Safe schema migrations for Pro GIF avatars, status modes, Admin panel & WhatsApp OTP
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_pro INTEGER DEFAULT 0;`);
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status_mode VARCHAR(32) DEFAULT 'online';`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS admins (
+      id VARCHAR(255) PRIMARY KEY,
+      username VARCHAR(255) UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      role VARCHAR(50) DEFAULT 'superadmin',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS otp_codes (
+      phone VARCHAR(64) PRIMARY KEY,
+      code VARCHAR(16) NOT NULL,
+      expires_at TIMESTAMP NOT NULL,
+      verified INTEGER DEFAULT 0,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  // Seed default admin account: admin / Aliyabuz2001#
+  const existingAdmin = await get(`SELECT id FROM admins WHERE username = ?`, ['admin']);
+  if (!existingAdmin) {
+    await run(
+      `INSERT INTO admins (id, username, password_hash, role) VALUES (?, ?, ?, ?)`,
+      ['adm_default_1', 'admin', hashPassword('Aliyabuz2001#'), 'superadmin']
+    );
+    console.log('🛡️ [Admin] Default admin seeded (username: admin)');
+  }
+
   const user = await get(`SELECT id FROM users WHERE id = 'usr_boombot';`);
   if (!user) {
     await seedRealData();
@@ -230,5 +280,7 @@ module.exports = {
   get,
   all,
   initDatabase,
-  seedRealData
+  seedRealData,
+  hashPassword,
+  verifyPassword
 };

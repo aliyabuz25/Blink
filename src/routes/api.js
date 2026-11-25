@@ -6,6 +6,7 @@ const multer = require('multer');
 const { run, get, all } = require('../db/sqlite');
 const redisModule = require('../db/redis');
 const { triggerBoomBotReply } = require('../services/boombot');
+const whatsappService = require('../services/whatsapp');
 
 // Configure Multer for avatar and file uploads
 // In production or Electron packaged app, use a user-writable application data directory
@@ -121,13 +122,32 @@ router.post('/auth/verify-code', async (req, res) => {
   }
 });
 
-// Step 3 & 4: Upload avatar with Multer
+// Step 3 & 4: Upload avatar with Multer (Animated GIF restricted to Pro users)
 router.post('/auth/upload-avatar', upload.single('avatar'), async (req, res) => {
   try {
     if (!req.file) {
       return res.status(400).json({ error: 'Fotoğraf seçilmedi' });
     }
     const currentId = getCurrentUserId(req);
+    const isGif =
+      String(req.file.mimetype || '').toLowerCase() === 'image/gif' ||
+      String(req.file.originalname || '').toLowerCase().endsWith('.gif');
+
+    if (isGif) {
+      let isPro = false;
+      if (currentId) {
+        const u = await get(`SELECT is_pro FROM users WHERE id = ?`, [currentId]);
+        isPro = Boolean(u && u.is_pro);
+      }
+      if (!isPro) {
+        try { fs.unlinkSync(req.file.path); } catch {}
+        return res.status(403).json({
+          error: 'Hareketli GIF profil fotoğrafı yalnızca Pro kullanıcılar içindir!',
+          proRequired: true,
+        });
+      }
+    }
+
     const avatarUrl = '/uploads/avatars/' + req.file.filename;
 
     if (currentId) {
@@ -139,6 +159,69 @@ router.post('/auth/upload-avatar', upload.single('avatar'), async (req, res) => 
     }
 
     res.json({ success: true, avatarUrl });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// WhatsApp (Baileys WABA) Registration OTP Status, Send & Verify
+router.get('/auth/otp-status', (req, res) => {
+  const st = whatsappService.getStatus();
+  res.json({
+    whatsappConnected: st.connected,
+    otpRequired: st.connected,
+    senderNumber: st.phoneNumber ? `+${st.phoneNumber}` : null,
+  });
+});
+
+router.post('/auth/send-otp', async (req, res) => {
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    const digits = phone.replace(/\D/g, '');
+    if (digits.length < 7) {
+      return res.status(400).json({ error: 'Geçerli bir telefon numarası giriniz.' });
+    }
+    const st = whatsappService.getStatus();
+    if (!st.connected) {
+      return res.status(503).json({
+        error: 'WhatsApp OTP servisi henüz bağlı değil (Admin panelinden numara bağlanmalıdır).',
+        whatsappConnected: false,
+      });
+    }
+
+    const code = String(Math.floor(100000 + Math.random() * 900000));
+    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
+
+    await run(
+      `INSERT INTO otp_codes (phone, code, expires_at, verified, created_at)
+       VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP)
+       ON CONFLICT (phone) DO UPDATE SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at, verified = 0, created_at = CURRENT_TIMESTAMP`,
+      [phone, code, expiresAt]
+    );
+
+    await whatsappService.sendOtp(phone, code);
+    res.json({ success: true, message: 'Doğrulama kodu WhatsApp üzerinden gönderildi!' });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'WhatsApp kodu gönderilemedi' });
+  }
+});
+
+router.post('/auth/verify-otp', async (req, res) => {
+  try {
+    const phone = String(req.body?.phone || '').trim();
+    const code = String(req.body?.code || '').trim();
+    if (!phone || !code) {
+      return res.status(400).json({ error: 'Telefon ve doğrulama kodu zorunludur.' });
+    }
+    const row = await get(`SELECT * FROM otp_codes WHERE phone = ?`, [phone]);
+    if (!row || row.code !== code) {
+      return res.status(400).json({ error: 'Doğrulama kodu hatalı.' });
+    }
+    if (new Date(row.expires_at).getTime() < Date.now()) {
+      return res.status(400).json({ error: 'Doğrulama kodunun süresi doldu. Yeni kod isteyin.' });
+    }
+    await run(`UPDATE otp_codes SET verified = 1 WHERE phone = ?`, [phone]);
+    res.json({ success: true, verified: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -172,10 +255,10 @@ router.post('/upload', generalUpload.single('file'), async (req, res) => {
   }
 });
 
-// Step 4 Completion: Register user
+// Step 4 Completion: Register user (verifies WhatsApp OTP when Baileys is connected)
 router.post('/auth/register', async (req, res) => {
   try {
-    let { phone, name, avatar } = req.body;
+    let { phone, name, avatar, otpCode } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'İsim ve soyisim zorunludur' });
     }
@@ -193,6 +276,20 @@ router.post('/auth/register', async (req, res) => {
     let user = null;
     if (phone) {
       user = await get(`SELECT * FROM users WHERE phone = ?`, [phone]);
+    }
+
+    // If registering a brand-new user and WhatsApp Baileys is connected, enforce OTP verification
+    if (!user && phone && whatsappService.getStatus().connected) {
+      const otpRow = await get(`SELECT * FROM otp_codes WHERE phone = ?`, [phone]);
+      const codeMatches = otpRow && otpCode && String(otpRow.code) === String(otpCode).trim() && new Date(otpRow.expires_at).getTime() >= Date.now();
+      const alreadyVerified = otpRow && otpRow.verified === 1 && new Date(otpRow.expires_at).getTime() >= Date.now();
+      if (!alreadyVerified && !codeMatches) {
+        return res.status(400).json({
+          error: 'Kayıt olmak için WhatsApp üzerinden gönderilen 6 haneli doğrulama kodunu girmelisiniz.',
+          otpRequired: true,
+        });
+      }
+      await run(`DELETE FROM otp_codes WHERE phone = ?`, [phone]);
     }
 
     if (user) {

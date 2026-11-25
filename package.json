@@ -19,12 +19,15 @@
   "author": "Ali Yabuz",
   "license": "MIT",
   "dependencies": {
+    "@whiskeysockets/baileys": "^7.0.0-rc14",
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
     "express": "^5.0.1",
     "ioredis": "^6.0.0",
     "multer": "^2.5.0",
     "pg": "^8.23.1",
+    "pino": "^10.4.0",
+    "qrcode": "^1.5.4",
     "socket.io": "^4.8.4"
   }
 }

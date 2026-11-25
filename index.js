@@ -11,6 +11,8 @@ const { initDatabase, run, get } = require('./src/db/sqlite');
 const redisModule = require('./src/db/redis');
 const { triggerBoomBotReply } = require('./src/services/boombot');
 const apiRouter = require('./src/routes/api');
+const adminRouter = require('./src/routes/admin');
+const whatsappService = require('./src/services/whatsapp');
 
 const app = express();
 const server = http.createServer(app);
@@ -99,8 +101,19 @@ app.get('/health', (req, res) => {
   });
 });
 
-// REST API routes
+// REST API & Admin API routes
+app.use('/api/admin', adminRouter);
 app.use('/api', apiRouter);
+
+// Bootstrap 5 Admin Panel (/admin)
+const adminPanelDir = path.resolve(__dirname, 'admin');
+if (fs.existsSync(adminPanelDir)) {
+  app.use('/admin', express.static(adminPanelDir, { index: 'index.html' }));
+  app.get('/admin', (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.sendFile(path.join(adminPanelDir, 'index.html'));
+  });
+}
 
 // Discord-style Live Web & Desktop App Hosting (serves ./webapp built by `npm run sync:backend`)
 const webappDir = path.resolve(__dirname, 'webapp');
@@ -435,10 +448,14 @@ async function start() {
     console.warn('⚠️ Redis setup notice:', err.message);
   }
 
+  // Auto-restore Baileys WhatsApp OTP session if previously paired
+  whatsappService.autoRestoreIfSessionExists().catch(() => {});
+
   server.listen(PORT, HOST, () => {
     console.log(`\n=================================================`);
     console.log(`⚡ Blink Standalone Backend & API Gateway`);
     console.log(`🌐 Local URL:   http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}`);
+    console.log(`🛡️ Admin Panel: http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/admin`);
     console.log(`🩺 Health:      http://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/health`);
     console.log(`📡 WebSocket:   ws://${HOST === '0.0.0.0' ? 'localhost' : HOST}:${PORT}/socket.io`);
     console.log(`=================================================\n`);
