@@ -40,7 +40,7 @@ class WhatsAppService {
 
   normalizePhone(phone) {
     let digits = String(phone || '').replace(/\D/g, '');
-    if (!digits) throw new Error('Geçersiz telefon numarası');
+    if (!digits) throw new Error('Invalid phone number');
     if (digits.startsWith('00')) {
       digits = digits.slice(2);
     }
@@ -192,7 +192,7 @@ class WhatsAppService {
 
   async sendText(phone, text) {
     if (!this.sock || this.status !== 'connected') {
-      throw new Error('WhatsApp bağlı değil. Admin panelinden QR kod ile numara bağlayın.');
+      throw new Error('WhatsApp is not connected. Please link a number in the Admin Panel.');
     }
     const normalized = this.normalizePhone(phone);
     let targetJid = `${normalized}@s.whatsapp.net`;
@@ -205,7 +205,7 @@ class WhatsAppService {
         if (match && match.exists && match.jid) {
           targetJid = match.jid;
         } else if (match && match.exists === false) {
-          throw new Error(`+${normalized} numarası WhatsApp üzerinde kayıtlı görünmüyor.`);
+          throw new Error(`+${normalized} is not registered on WhatsApp.`);
         }
       }
     } catch (checkErr) {
@@ -221,7 +221,7 @@ class WhatsAppService {
   }
 
   async sendOtp(phone, code) {
-    const text = `🔐 *Blink Doğrulama Kodunuz:* *${code}*\n\nBu kodu 5 dakika içinde kayıt ekranına giriniz. Kimseyle paylaşmayınız.`;
+    const text = `🔐 *Your Blink Verification Code:* *${code}*\n\nEnter this code within 5 minutes. Do not share it with anyone.`;
     return this.sendText(phone, text);
   }
 }

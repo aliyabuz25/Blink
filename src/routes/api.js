@@ -126,7 +126,7 @@ router.post('/auth/verify-code', async (req, res) => {
 router.post('/auth/upload-avatar', upload.single('avatar'), async (req, res) => {
   try {
     if (!req.file) {
-      return res.status(400).json({ error: 'Fotoğraf seçilmedi' });
+      return res.status(400).json({ error: 'No photo selected' });
     }
     const currentId = getCurrentUserId(req);
     const isGif =
@@ -142,7 +142,7 @@ router.post('/auth/upload-avatar', upload.single('avatar'), async (req, res) => 
       if (!isPro) {
         try { fs.unlinkSync(req.file.path); } catch {}
         return res.status(403).json({
-          error: 'Hareketli GIF profil fotoğrafı yalnızca Pro kullanıcılar içindir!',
+          error: 'Animated GIF profile photos are for Pro users only!',
           proRequired: true,
         });
       }
@@ -179,12 +179,12 @@ router.post('/auth/send-otp', async (req, res) => {
     const rawPhone = String(req.body?.phone || '').trim();
     const digits = rawPhone.replace(/\D/g, '');
     if (digits.length < 7) {
-      return res.status(400).json({ error: 'Geçerli bir telefon numarası giriniz.' });
+      return res.status(400).json({ error: 'Please enter a valid phone number.' });
     }
     const st = whatsappService.getStatus();
     if (!st.connected) {
       return res.status(503).json({
-        error: 'WhatsApp OTP servisi henüz bağlı değil (Admin panelinden numara bağlanmalıdır).',
+        error: 'WhatsApp OTP service is not connected yet.',
         whatsappConnected: false,
       });
     }
@@ -204,11 +204,11 @@ router.post('/auth/send-otp', async (req, res) => {
     res.json({
       success: true,
       to: result.to,
-      message: `Doğrulama kodu +${phoneKey} numarasına WhatsApp üzerinden gönderildi!`,
+      message: `Verification code sent via WhatsApp to +${phoneKey}!`,
     });
   } catch (err) {
     console.error('❌ [OTP] send-otp error:', err);
-    res.status(500).json({ error: err?.message || 'WhatsApp kodu gönderilemedi' });
+    res.status(500).json({ error: err?.message || 'Could not send WhatsApp code' });
   }
 });
 
@@ -217,15 +217,15 @@ router.post('/auth/verify-otp', async (req, res) => {
     const rawPhone = String(req.body?.phone || '').trim();
     const code = String(req.body?.code || '').trim();
     if (!rawPhone || !code) {
-      return res.status(400).json({ error: 'Telefon ve doğrulama kodu zorunludur.' });
+      return res.status(400).json({ error: 'Phone number and verification code are required.' });
     }
     const phoneKey = whatsappService.normalizePhone(rawPhone);
     const row = await get(`SELECT * FROM otp_codes WHERE phone = ? OR phone = ?`, [phoneKey, rawPhone]);
     if (!row || row.code !== code) {
-      return res.status(400).json({ error: 'Doğrulama kodu hatalı.' });
+      return res.status(400).json({ error: 'Invalid verification code.' });
     }
     if (new Date(row.expires_at).getTime() < Date.now()) {
-      return res.status(400).json({ error: 'Doğrulama kodunun süresi doldu. Yeni kod isteyin.' });
+      return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
     }
     await run(`UPDATE otp_codes SET verified = 1 WHERE phone = ?`, [row.phone]);
     res.json({ success: true, verified: true });
@@ -267,7 +267,7 @@ router.post('/auth/register', async (req, res) => {
   try {
     let { phone, name, avatar, otpCode } = req.body;
     if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'İsim ve soyisim zorunludur' });
+      return res.status(400).json({ error: 'Full name is required' });
     }
     phone = (phone || '').trim();
     name = name.trim();
@@ -293,7 +293,7 @@ router.post('/auth/register', async (req, res) => {
       const alreadyVerified = otpRow && otpRow.verified === 1 && new Date(otpRow.expires_at).getTime() >= Date.now();
       if (!alreadyVerified && !codeMatches) {
         return res.status(400).json({
-          error: 'Kayıt olmak için WhatsApp üzerinden gönderilen 6 haneli doğrulama kodunu girmelisiniz.',
+          error: 'Please enter the 6-digit verification code sent via WhatsApp.',
           otpRequired: true,
         });
       }
