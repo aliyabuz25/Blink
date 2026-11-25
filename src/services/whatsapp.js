@@ -38,12 +38,25 @@ class WhatsAppService {
     };
   }
 
-  formatJid(phone) {
-    const digits = String(phone || '').replace(/\D/g, '');
+  normalizePhone(phone) {
+    let digits = String(phone || '').replace(/\D/g, '');
     if (!digits) throw new Error('Geçersiz telefon numarası');
-    // Normalize Turkish local 05xx -> 905xx if 11 digits starting with 0
-    const normalized = digits.startsWith('0') && digits.length === 11 ? '9' + digits : digits;
-    return `${normalized}@s.whatsapp.net`;
+    if (digits.startsWith('00')) {
+      digits = digits.slice(2);
+    }
+    // Turkish mobile: 5XXXXXXXXX (10 digits) -> 905XXXXXXXXX
+    if (digits.length === 10 && digits.startsWith('5')) {
+      digits = '90' + digits;
+    }
+    // Turkish local: 05XXXXXXXXX (11 digits) -> 905XXXXXXXXX
+    else if (digits.length === 11 && digits.startsWith('0')) {
+      digits = '9' + digits;
+    }
+    return digits;
+  }
+
+  formatJid(phone) {
+    return `${this.normalizePhone(phone)}@s.whatsapp.net`;
   }
 
   async connect() {
@@ -181,9 +194,30 @@ class WhatsAppService {
     if (!this.sock || this.status !== 'connected') {
       throw new Error('WhatsApp bağlı değil. Admin panelinden QR kod ile numara bağlayın.');
     }
-    const jid = this.formatJid(phone);
-    await this.sock.sendMessage(jid, { text });
-    return { success: true, to: jid };
+    const normalized = this.normalizePhone(phone);
+    let targetJid = `${normalized}@s.whatsapp.net`;
+
+    // Resolve canonical WhatsApp JID via onWhatsApp (critical for Baileys v7 & LID/JID routing)
+    try {
+      if (typeof this.sock.onWhatsApp === 'function') {
+        const results = await this.sock.onWhatsApp(normalized);
+        const match = Array.isArray(results) ? results[0] : null;
+        if (match && match.exists && match.jid) {
+          targetJid = match.jid;
+        } else if (match && match.exists === false) {
+          throw new Error(`+${normalized} numarası WhatsApp üzerinde kayıtlı görünmüyor.`);
+        }
+      }
+    } catch (checkErr) {
+      if (checkErr.message && checkErr.message.includes('kayıtlı görünmüyor')) {
+        throw checkErr;
+      }
+      console.warn('⚠️ [Baileys WABA] onWhatsApp lookup warning, falling back to JID:', checkErr.message);
+    }
+
+    const sent = await this.sock.sendMessage(targetJid, { text });
+    console.log(`✅ [Baileys WABA] Message sent to ${targetJid} (id: ${sent?.key?.id || 'ok'})`);
+    return { success: true, to: targetJid, messageId: sent?.key?.id || null };
   }
 
   async sendOtp(phone, code) {

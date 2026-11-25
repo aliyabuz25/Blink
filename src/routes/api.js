@@ -176,8 +176,8 @@ router.get('/auth/otp-status', (req, res) => {
 
 router.post('/auth/send-otp', async (req, res) => {
   try {
-    const phone = String(req.body?.phone || '').trim();
-    const digits = phone.replace(/\D/g, '');
+    const rawPhone = String(req.body?.phone || '').trim();
+    const digits = rawPhone.replace(/\D/g, '');
     if (digits.length < 7) {
       return res.status(400).json({ error: 'Geçerli bir telefon numarası giriniz.' });
     }
@@ -189,6 +189,7 @@ router.post('/auth/send-otp', async (req, res) => {
       });
     }
 
+    const phoneKey = whatsappService.normalizePhone(rawPhone);
     const code = String(Math.floor(100000 + Math.random() * 900000));
     const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
@@ -196,31 +197,37 @@ router.post('/auth/send-otp', async (req, res) => {
       `INSERT INTO otp_codes (phone, code, expires_at, verified, created_at)
        VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP)
        ON CONFLICT (phone) DO UPDATE SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at, verified = 0, created_at = CURRENT_TIMESTAMP`,
-      [phone, code, expiresAt]
+      [phoneKey, code, expiresAt]
     );
 
-    await whatsappService.sendOtp(phone, code);
-    res.json({ success: true, message: 'Doğrulama kodu WhatsApp üzerinden gönderildi!' });
+    const result = await whatsappService.sendOtp(phoneKey, code);
+    res.json({
+      success: true,
+      to: result.to,
+      message: `Doğrulama kodu +${phoneKey} numarasına WhatsApp üzerinden gönderildi!`,
+    });
   } catch (err) {
+    console.error('❌ [OTP] send-otp error:', err);
     res.status(500).json({ error: err?.message || 'WhatsApp kodu gönderilemedi' });
   }
 });
 
 router.post('/auth/verify-otp', async (req, res) => {
   try {
-    const phone = String(req.body?.phone || '').trim();
+    const rawPhone = String(req.body?.phone || '').trim();
     const code = String(req.body?.code || '').trim();
-    if (!phone || !code) {
+    if (!rawPhone || !code) {
       return res.status(400).json({ error: 'Telefon ve doğrulama kodu zorunludur.' });
     }
-    const row = await get(`SELECT * FROM otp_codes WHERE phone = ?`, [phone]);
+    const phoneKey = whatsappService.normalizePhone(rawPhone);
+    const row = await get(`SELECT * FROM otp_codes WHERE phone = ? OR phone = ?`, [phoneKey, rawPhone]);
     if (!row || row.code !== code) {
       return res.status(400).json({ error: 'Doğrulama kodu hatalı.' });
     }
     if (new Date(row.expires_at).getTime() < Date.now()) {
       return res.status(400).json({ error: 'Doğrulama kodunun süresi doldu. Yeni kod isteyin.' });
     }
-    await run(`UPDATE otp_codes SET verified = 1 WHERE phone = ?`, [phone]);
+    await run(`UPDATE otp_codes SET verified = 1 WHERE phone = ?`, [row.phone]);
     res.json({ success: true, verified: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -280,7 +287,8 @@ router.post('/auth/register', async (req, res) => {
 
     // If registering a brand-new user and WhatsApp Baileys is connected, enforce OTP verification
     if (!user && phone && whatsappService.getStatus().connected) {
-      const otpRow = await get(`SELECT * FROM otp_codes WHERE phone = ?`, [phone]);
+      const phoneKey = whatsappService.normalizePhone(phone);
+      const otpRow = await get(`SELECT * FROM otp_codes WHERE phone = ? OR phone = ?`, [phoneKey, phone]);
       const codeMatches = otpRow && otpCode && String(otpRow.code) === String(otpCode).trim() && new Date(otpRow.expires_at).getTime() >= Date.now();
       const alreadyVerified = otpRow && otpRow.verified === 1 && new Date(otpRow.expires_at).getTime() >= Date.now();
       if (!alreadyVerified && !codeMatches) {
@@ -289,7 +297,7 @@ router.post('/auth/register', async (req, res) => {
           otpRequired: true,
         });
       }
-      await run(`DELETE FROM otp_codes WHERE phone = ?`, [phone]);
+      await run(`DELETE FROM otp_codes WHERE phone = ?`, [otpRow.phone]);
     }
 
     if (user) {
