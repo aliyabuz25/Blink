@@ -451,6 +451,15 @@ io.on('connection', (socket) => {
     }
   });
 
+  // Real-time HD call quality telemetry relay
+  socket.on('webrtc_quality_stats', (data) => {
+    if (data?.targetUserId) {
+      socket.to(`user_${data.targetUserId}`).emit('webrtc_quality_stats', data);
+    } else if (data?.conversationId) {
+      socket.to(`conv_${data.conversationId}`).emit('webrtc_quality_stats', data);
+    }
+  });
+
   // Disconnection cleanup (only mark offline when user's last active socket disconnects)
   socket.on('disconnect', async () => {
     if (socket.userId) {

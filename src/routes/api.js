@@ -1238,4 +1238,45 @@ router.get('/music/search', async (req, res) => {
   }
 });
 
+// AAA Ultra-HD WebRTC ICE & Media Profile Configuration
+router.get('/webrtc/config', (req, res) => {
+  const iceServers = [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
+    { urls: 'stun:stun4.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
+  ];
+
+  // Optional production TURN server from environment variables
+  if (process.env.TURN_URLS) {
+    const urls = process.env.TURN_URLS.split(',').map((u) => u.trim()).filter(Boolean);
+    if (urls.length > 0) {
+      iceServers.push({
+        urls,
+        username: process.env.TURN_USERNAME || undefined,
+        credential: process.env.TURN_CREDENTIAL || undefined,
+      });
+    }
+  }
+
+  res.json({
+    iceServers,
+    iceCandidatePoolSize: 10,
+    bundlePolicy: 'max-bundle',
+    rtcpMuxPolicy: 'require',
+    hdProfile: {
+      width: 1920,
+      height: 1080,
+      frameRate: 60,
+      maxVideoBitrate: 4500000,
+      minVideoBitrate: 1200000,
+      startVideoBitrate: 2500000,
+      maxAudioBitrate: 128000,
+      degradationPreference: 'maintain-resolution',
+    },
+  });
+});
+
 module.exports = router;
