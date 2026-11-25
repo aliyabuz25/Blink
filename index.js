@@ -105,15 +105,15 @@ app.get('/health', (req, res) => {
 app.use('/api/admin', adminRouter);
 app.use('/api', apiRouter);
 
-// Bootstrap 5 Admin Panel (/admin)
-const adminPanelDir = path.resolve(__dirname, 'admin');
-if (fs.existsSync(adminPanelDir)) {
-  app.use('/admin', express.static(adminPanelDir, { index: 'index.html' }));
-  app.get('/admin', (req, res) => {
-    res.setHeader('Cache-Control', 'no-cache');
-    res.sendFile(path.join(adminPanelDir, 'index.html'));
-  });
-}
+// React (shadcn-admin) Admin Panel served from ./webapp/admin.html
+app.get(['/admin', '/admin/'], (req, res) => {
+  const reactAdminHtml = path.resolve(__dirname, 'webapp', 'admin.html');
+  if (fs.existsSync(reactAdminHtml)) {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    return res.sendFile(reactAdminHtml);
+  }
+  res.status(404).json({ error: 'Admin panel not built yet. Run npm run sync:backend.' });
+});
 
 // Discord-style Live Web & Desktop App Hosting (serves ./webapp built by `npm run sync:backend`)
 const webappDir = path.resolve(__dirname, 'webapp');
