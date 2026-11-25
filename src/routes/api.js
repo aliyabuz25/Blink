@@ -796,6 +796,18 @@ router.get('/conversations', async (req, res) => {
           WHEN c.is_group = 0 AND other_u.id IS NOT NULL THEN other_u.last_seen 
           ELSE NULL 
         END as last_seen,
+        CASE
+          WHEN c.is_group = 0 AND other_u.id IS NOT NULL THEN COALESCE(other_u.status_mode, CASE WHEN other_u.is_online = 1 THEN 'online' ELSE 'offline' END)
+          ELSE 'online'
+        END as status_mode,
+        CASE
+          WHEN c.is_group = 0 AND other_u.id IS NOT NULL THEN COALESCE(other_u.is_pro, 0)
+          ELSE 0
+        END as is_pro,
+        CASE
+          WHEN c.is_group = 0 AND other_u.id IS NOT NULL THEN other_u.wechat_id
+          ELSE NULL
+        END as wechat_id,
         c.is_group, c.is_favorite,
         (
           SELECT json_build_object('content', m.content, 'created_at', m.created_at, 'sender_id', m.sender_id, 'status', m.status)::text
