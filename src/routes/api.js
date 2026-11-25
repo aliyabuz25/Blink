@@ -541,7 +541,7 @@ router.get('/friends', async (req, res) => {
   try {
     const currentId = getCurrentUserId(req);
     const friends = await all(
-      `SELECT DISTINCT u.id, u.username, u.name, u.avatar, u.phone, u.wechat_id, u.invitation_id, u.is_online, u.last_seen
+      `SELECT DISTINCT u.id, u.username, u.name, u.avatar, u.wechat_id, u.invitation_id, u.is_online, u.status_mode, u.is_pro, u.last_seen
        FROM users u
        JOIN conversation_members cm1 ON u.id = cm1.user_id
        JOIN conversation_members cm2 ON cm1.conversation_id = cm2.conversation_id
@@ -713,7 +713,6 @@ router.get('/users/:id/profile', async (req, res) => {
         username: user.username,
         avatar: user.avatar,
         bio: user.bio || '',
-        phone: user.phone || '',
         wechatId: user.wechat_id || user.username,
         invitationId: user.invitation_id || '',
         is_online: Boolean(Number(user.is_online)),
