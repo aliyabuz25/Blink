@@ -163,7 +163,7 @@ router.post('/auth/upload-avatar', upload.single('avatar'), async (req, res) => 
       if (!isPro) {
         try { fs.unlinkSync(req.file.path); } catch {}
         return res.status(403).json({
-          error: 'Animated GIF profile photos are for Pro users only!',
+          error: 'Animated avatars require a Blink Pulse subscription!',
           proRequired: true,
         });
       }
