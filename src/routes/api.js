@@ -618,6 +618,34 @@ router.get('/users/me', async (req, res) => {
   }
 });
 
+// Update authenticated user profile (Display Name & Bio)
+router.patch('/users/me', async (req, res) => {
+  try {
+    const userId = req.headers['x-user-id'] || req.query.userId || req.body?.userId;
+    if (!userId) return res.status(400).json({ error: 'User ID is required' });
+    const existing = await get(`SELECT * FROM users WHERE id = ?`, [String(userId)]);
+    if (!existing) return res.status(404).json({ error: 'User not found' });
+
+    const nextName = req.body?.name !== undefined ? String(req.body.name).trim() : existing.name;
+    const nextBio = req.body?.bio !== undefined ? String(req.body.bio).trim().slice(0, 140) : (existing.bio || '');
+    if (!nextName) return res.status(400).json({ error: 'Display name cannot be empty' });
+
+    await run(`UPDATE users SET name = ?, bio = ? WHERE id = ?`, [nextName, nextBio, existing.id]);
+    const updated = await get(`SELECT * FROM users WHERE id = ?`, [existing.id]);
+
+    res.json({
+      success: true,
+      user: {
+        ...updated,
+        is_pro: Boolean(Number(updated.is_pro)),
+        is_online: Boolean(Number(updated.is_online)),
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/users', async (req, res) => {
   try {
     const users = await all(`SELECT id, username, name, avatar FROM users WHERE id != 'usr_boombot' ORDER BY name ASC`);

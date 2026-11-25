@@ -175,9 +175,10 @@ async function initDatabase() {
     );
   `);
 
-  // Safe schema migrations for Pro GIF avatars, status modes, Admin panel & WhatsApp OTP
+  // Safe schema migrations for Pro GIF avatars, status modes, bio, Admin panel & WhatsApp OTP
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_pro INTEGER DEFAULT 0;`);
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status_mode VARCHAR(32) DEFAULT 'online';`);
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT '';`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS admins (
