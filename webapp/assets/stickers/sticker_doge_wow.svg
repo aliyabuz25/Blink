@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+      <defs>
+        <radialGradient id="dogeGrad" cx="45%" cy="40%" r="55%">
+          <stop offset="0%" stop-color="#fbbf24"/>
+          <stop offset="100%" stop-color="#d97706"/>
+        </radialGradient>
+      </defs>
+      <!-- Ears -->
+      <polygon points="30,22 18,65 58,55" fill="#b45309"/>
+      <polygon points="130,22 102,55 142,65" fill="#b45309"/>
+      <!-- Face -->
+      <circle cx="80" cy="85" r="56" fill="url(#dogeGrad)"/>
+      <!-- Muzzle -->
+      <ellipse cx="80" cy="102" rx="28" ry="20" fill="#fef3c7"/>
+      <!-- Nose -->
+      <ellipse cx="80" cy="92" rx="8" ry="6" fill="#1f2937"/>
+      <!-- Mouth -->
+      <path d="M 72 105 Q 80 112 88 105" stroke="#1f2937" stroke-width="2.5" fill="none" stroke-linecap="round"/>
+      <!-- Side Eye Eyes -->
+      <circle cx="56" cy="72" r="9" fill="#fff"/>
+      <circle cx="59" cy="72" r="4.5" fill="#1f2937"/>
+      <circle cx="104" cy="72" r="9" fill="#fff"/>
+      <circle cx="107" cy="72" r="4.5" fill="#1f2937"/>
+      <!-- Eyebrows -->
+      <path d="M 48 60 Q 56 55 64 61" stroke="#78350f" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <path d="M 96 61 Q 104 55 112 60" stroke="#78350f" stroke-width="3" fill="none" stroke-linecap="round"/>
+    </svg>

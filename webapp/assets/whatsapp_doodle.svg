@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300" viewBox="0 0 300 300" fill="none" stroke="#ffffff" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+  <!-- Chat Bubble -->
+  <path d="M25 40c0-10 10-18 22-18h16c12 0 22 8 22 18 0 8-7 15-16 17l4 9-11-5c-5 1-10 1-15-1-8-3-12-10-12-18z"/>
+  <!-- Heart -->
+  <path d="M125 35a9 9 0 0 1 13 0l2 2a9 9 0 0 1 0 13l-15 15-15-15a9 9 0 0 1 0-13l2-2a9 9 0 0 1 13 0z"/>
+  <!-- Coffee / Tea Cup -->
+  <path d="M210 38h25v16c0 8-6 14-14 14h-11v-30z"/>
+  <path d="M235 44h8a5 5 0 0 1 5 5 5 5 0 0 1-5 5h-8"/>
+  <path d="M205 74h35"/>
+  <!-- Star -->
+  <path d="M40 120l4 8 9 1-7 6 2 9-8-4-8 4 2-9-7-6 9-1z"/>
+  <!-- Headphone -->
+  <path d="M110 140a20 20 0 0 1 40 0v16"/>
+  <rect x="104" y="148" width="8" height="16" rx="4"/>
+  <rect x="148" y="148" width="8" height="16" rx="4"/>
+  <!-- Camera -->
+  <rect x="210" y="125" width="32" height="24" rx="5"/>
+  <circle cx="226" cy="137" r="6"/>
+  <path d="M220 125l3-5h8l3 5"/>
+  <!-- Music Note -->
+  <path d="M45 235v-25l20-5v25"/>
+  <circle cx="38" cy="237" r="7"/>
+  <circle cx="58" cy="232" r="7"/>
+  <!-- Paper Plane -->
+  <path d="M120 225l40-15-18 35-5-14z"/>
+  <path d="M137 231l23-21"/>
+  <!-- Mobile Phone -->
+  <rect x="220" y="215" width="20" height="36" rx="4"/>
+  <line x1="227" y1="220" x2="233" y2="220"/>
+  <circle cx="230" cy="244" r="1.5" fill="#ffffff"/>
+</svg>

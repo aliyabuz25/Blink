@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160">
+      <defs>
+        <radialGradient id="pigGrad" cx="45%" cy="40%" r="55%">
+          <stop offset="0%" stop-color="#ffb6c1"/>
+          <stop offset="100%" stop-color="#ff8da1"/>
+        </radialGradient>
+      </defs>
+      <!-- Ears -->
+      <polygon points="40,25 25,60 55,50" fill="#ff708d"/>
+      <polygon points="120,25 105,50 135,60" fill="#ff708d"/>
+      <!-- Face -->
+      <circle cx="80" cy="85" r="58" fill="url(#pigGrad)"/>
+      <!-- Cheeks -->
+      <circle cx="48" cy="98" r="9" fill="#ff4d79" opacity="0.45"/>
+      <circle cx="112" cy="98" r="9" fill="#ff4d79" opacity="0.45"/>
+      <!-- Eyes -->
+      <circle cx="56" cy="74" r="5.5" fill="#222"/>
+      <circle cx="58" cy="72" r="2" fill="#fff"/>
+      <circle cx="104" cy="74" r="5.5" fill="#222"/>
+      <circle cx="106" cy="72" r="2" fill="#fff"/>
+      <!-- Snout -->
+      <ellipse cx="80" cy="94" rx="20" ry="14" fill="#ff708d"/>
+      <ellipse cx="73" cy="94" rx="3.5" ry="5.5" fill="#c73859"/>
+      <ellipse cx="87" cy="94" rx="3.5" ry="5.5" fill="#c73859"/>
+      <!-- Smile -->
+      <path d="M 72 116 Q 80 124 88 116" stroke="#c73859" stroke-width="3" fill="none" stroke-linecap="round"/>
+      <!-- Waving Hand -->
+      <ellipse cx="134" cy="82" rx="9" ry="13" fill="#ff8da1" transform="rotate(35 134 82)"/>
+    </svg>

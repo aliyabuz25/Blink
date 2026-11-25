@@ -90,21 +90,56 @@ app.get('/health', (req, res) => {
   res.json({
     status: 'healthy',
     service: 'blink-backend',
-    version: '1.0.0',
+    version: '1.1.0',
     port: PORT,
     siteUrl: SITE_URL,
+    webappEnabled: fs.existsSync(path.resolve(__dirname, 'webapp', 'index.html')),
     uptimeSeconds: Math.floor(process.uptime()),
     timestamp: new Date().toISOString()
   });
 });
 
-// Root Information Endpoint
+// REST API routes
+app.use('/api', apiRouter);
+
+// Discord-style Live Web & Desktop App Hosting (serves ./webapp built by `npm run sync:backend`)
+const webappDir = path.resolve(__dirname, 'webapp');
+const webappIndex = path.join(webappDir, 'index.html');
+
+if (fs.existsSync(webappDir)) {
+  // Immutable long-cache for hashed Next.js assets, no-cache for HTML so clients always get updates
+  app.use(
+    '/_next/static',
+    express.static(path.join(webappDir, '_next', 'static'), {
+      maxAge: '1y',
+      immutable: true,
+    })
+  );
+  app.use(
+    express.static(webappDir, {
+      index: false,
+      maxAge: '1h',
+      setHeaders: (res, filePath) => {
+        if (filePath.endsWith('.html')) {
+          res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+        }
+      },
+    })
+  );
+}
+
+// Root & SPA Fallback — serves live Blink App if ./webapp/index.html exists, else JSON status
 app.get('/', (req, res) => {
+  if (fs.existsSync(webappIndex) && req.query.info !== '1') {
+    res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+    return res.sendFile(webappIndex);
+  }
   res.json({
     service: 'Blink Realtime & REST API Gateway',
     status: 'online',
-    version: '1.0.0',
+    version: '1.1.0',
     siteUrl: SITE_URL,
+    webappEnabled: fs.existsSync(webappIndex),
     endpoints: {
       health: '/health',
       api: '/api',
@@ -113,9 +148,6 @@ app.get('/', (req, res) => {
     }
   });
 });
-
-// REST API routes
-app.use('/api', apiRouter);
 
 // Redis Pub/Sub Synchronization (multi-instance / clustering ready)
 function setupRedisPubSub() {

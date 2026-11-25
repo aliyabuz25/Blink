@@ -866,4 +866,31 @@ router.delete('/calls', async (req, res) => {
   }
 });
 
+// Apple Music / iTunes Search Proxy
+router.get('/music/search', async (req, res) => {
+  try {
+    const q = String(req.query.q || 'pop hits').trim() || 'pop hits';
+    const url = `https://itunes.apple.com/search?term=${encodeURIComponent(q)}&media=music&entity=song&limit=18&country=TR`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      return res.status(502).json({ error: 'Apple Music API error', tracks: [] });
+    }
+    const data = await response.json();
+    const tracks = (data.results || [])
+      .filter((t) => t.previewUrl)
+      .map((t) => ({
+        trackId: t.trackId,
+        trackName: t.trackName,
+        artistName: t.artistName,
+        collectionName: t.collectionName,
+        artworkUrl: String(t.artworkUrl100 || '').replace('100x100bb', '300x300bb'),
+        previewUrl: t.previewUrl,
+        trackViewUrl: t.trackViewUrl,
+      }));
+    res.json({ tracks });
+  } catch (err) {
+    res.status(500).json({ error: err?.message || 'Music search failed', tracks: [] });
+  }
+});
+
 module.exports = router;
