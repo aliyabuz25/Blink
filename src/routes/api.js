@@ -64,25 +64,46 @@ function getCurrentUserId(req) {
 // ONBOARDING & AUTHENTICATION ENDPOINTS
 // ============================================================
 
-// Step 1: Send WhatsApp 4-digit verification code
+// Helper: find user by exact phone or normalized last 10 digits
+async function findUserByPhone(rawPhone) {
+  const trimmed = String(rawPhone || '').trim();
+  if (!trimmed) return null;
+  let user = await get(`SELECT * FROM users WHERE phone = ?`, [trimmed]);
+  if (user) return user;
+  const digits = trimmed.replace(/\D/g, '');
+  if (digits.length >= 7) {
+    const normalized = whatsappService.normalizePhone(trimmed);
+    user = await get(`SELECT * FROM users WHERE phone = ? OR phone = ?`, [normalized, `+${normalized}`]);
+    if (user) return user;
+    user = await get(
+      `SELECT * FROM users WHERE REPLACE(REPLACE(REPLACE(REPLACE(phone, ' ', ''), '+', ''), '-', ''), '(', '') LIKE ?`,
+      [`%${digits.slice(-10)}`]
+    );
+  }
+  return user || null;
+}
+
+// Step 1: Check existing phone or prepare OTP
 router.post('/auth/send-code', async (req, res) => {
   try {
     let { phone } = req.body;
     if (!phone || !phone.trim()) {
-      return res.status(400).json({ error: 'Telefon numarası zorunludur' });
+      return res.status(400).json({ error: 'Phone number is required' });
     }
     phone = phone.trim();
-    // 4-digit OTP code (e.g., 8492)
-    const code = Math.floor(1000 + Math.random() * 9000).toString();
-    verificationCodes.set(phone, { code, expiresAt: Date.now() + 10 * 60 * 1000 });
-
-    console.log(`📱 [WhatsApp OTP] ${phone} için onay kodu: ${code}`);
+    const existing = await findUserByPhone(phone);
+    if (existing) {
+      return res.json({
+        success: true,
+        isRegistered: true,
+        user: { ...existing, is_pro: Boolean(Number(existing.is_pro)) },
+      });
+    }
 
     res.json({
       success: true,
-      message: 'Onay kodu WhatsApp üzerinden gönderildi',
+      isRegistered: false,
       phone,
-      code
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -191,13 +212,13 @@ router.post('/auth/send-otp', async (req, res) => {
 
     const phoneKey = whatsappService.normalizePhone(rawPhone);
     const code = String(Math.floor(100000 + Math.random() * 900000));
-    const expiresAt = new Date(Date.now() + 5 * 60 * 1000).toISOString();
 
+    // Use PostgreSQL NOW() + INTERVAL '10 minutes' to avoid any JS/PG timezone mismatch
     await run(
       `INSERT INTO otp_codes (phone, code, expires_at, verified, created_at)
-       VALUES (?, ?, ?, 0, CURRENT_TIMESTAMP)
-       ON CONFLICT (phone) DO UPDATE SET code = EXCLUDED.code, expires_at = EXCLUDED.expires_at, verified = 0, created_at = CURRENT_TIMESTAMP`,
-      [phoneKey, code, expiresAt]
+       VALUES (?, ?, NOW() + INTERVAL '10 minutes', 0, NOW())
+       ON CONFLICT (phone) DO UPDATE SET code = EXCLUDED.code, expires_at = NOW() + INTERVAL '10 minutes', verified = 0, created_at = NOW()`,
+      [phoneKey, code]
     );
 
     const result = await whatsappService.sendOtp(phoneKey, code);
@@ -220,11 +241,14 @@ router.post('/auth/verify-otp', async (req, res) => {
       return res.status(400).json({ error: 'Phone number and verification code are required.' });
     }
     const phoneKey = whatsappService.normalizePhone(rawPhone);
-    const row = await get(`SELECT * FROM otp_codes WHERE phone = ? OR phone = ?`, [phoneKey, rawPhone]);
-    if (!row || row.code !== code) {
+    const row = await get(
+      `SELECT *, (expires_at >= NOW()) AS is_valid FROM otp_codes WHERE phone = ? OR phone = ?`,
+      [phoneKey, rawPhone]
+    );
+    if (!row || String(row.code).trim() !== code) {
       return res.status(400).json({ error: 'Invalid verification code.' });
     }
-    if (new Date(row.expires_at).getTime() < Date.now()) {
+    if (!row.is_valid) {
       return res.status(400).json({ error: 'Verification code expired. Please request a new one.' });
     }
     await run(`UPDATE otp_codes SET verified = 1 WHERE phone = ?`, [row.phone]);
@@ -281,16 +305,19 @@ router.post('/auth/register', async (req, res) => {
     const username = blinkId;
 
     let user = null;
+    const normalizedPhone = phone ? whatsappService.normalizePhone(phone) : '';
     if (phone) {
-      user = await get(`SELECT * FROM users WHERE phone = ?`, [phone]);
+      user = await findUserByPhone(phone);
     }
 
     // If registering a brand-new user and WhatsApp Baileys is connected, enforce OTP verification
-    if (!user && phone && whatsappService.getStatus().connected) {
-      const phoneKey = whatsappService.normalizePhone(phone);
-      const otpRow = await get(`SELECT * FROM otp_codes WHERE phone = ? OR phone = ?`, [phoneKey, phone]);
-      const codeMatches = otpRow && otpCode && String(otpRow.code) === String(otpCode).trim() && new Date(otpRow.expires_at).getTime() >= Date.now();
-      const alreadyVerified = otpRow && otpRow.verified === 1 && new Date(otpRow.expires_at).getTime() >= Date.now();
+    if (!user && normalizedPhone && whatsappService.getStatus().connected) {
+      const otpRow = await get(
+        `SELECT *, (expires_at >= NOW()) AS is_valid FROM otp_codes WHERE phone = ? OR phone = ?`,
+        [normalizedPhone, phone]
+      );
+      const codeMatches = otpRow && otpCode && String(otpRow.code).trim() === String(otpCode).trim() && otpRow.is_valid;
+      const alreadyVerified = otpRow && Number(otpRow.verified) === 1 && otpRow.is_valid;
       if (!alreadyVerified && !codeMatches) {
         return res.status(400).json({
           error: 'Please enter the 6-digit verification code sent via WhatsApp.',
@@ -302,12 +329,12 @@ router.post('/auth/register', async (req, res) => {
 
     if (user) {
       const currentBlinkId = user.wechat_id || user.username || blinkId;
-      await run(`UPDATE users SET name = ?, avatar = ?, wechat_id = ? WHERE id = ?`, [name, finalAvatar, currentBlinkId, user.id]);
+      await run(`UPDATE users SET name = ?, avatar = ?, wechat_id = ?, is_online = 1, last_seen = NOW() WHERE id = ?`, [name, finalAvatar, currentBlinkId, user.id]);
       user = await get(`SELECT * FROM users WHERE id = ?`, [user.id]);
     } else {
       await run(
-        `INSERT INTO users (id, username, name, avatar, phone, invitation_id, wechat_id, is_online) VALUES (?, ?, ?, ?, ?, ?, ?, 1)`,
-        [userId, username, name, finalAvatar, phone, invitationId, blinkId]
+        `INSERT INTO users (id, username, name, avatar, phone, invitation_id, wechat_id, is_online, is_pro) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)`,
+        [userId, username, name, finalAvatar, normalizedPhone || null, invitationId, blinkId]
       );
       user = await get(`SELECT * FROM users WHERE id = ?`, [userId]);
 
@@ -321,11 +348,14 @@ router.post('/auth/register', async (req, res) => {
       const now = new Date().toISOString();
       await run(
         `INSERT INTO messages (id, conversation_id, sender_id, content, status, created_at) VALUES (?, ?, ?, ?, 'delivered', ?)`,
-        [msgId, convId, 'usr_boombot', `Hoş geldin ${name}! 🎉 Ben BoomBot. Blink'e katıldığın için çok mutluyum! Arkadaşlarını Davet Kodunla (${invitationId}) ekleyebilirsin.`, now]
+        [msgId, convId, 'usr_boombot', `Welcome to Blink, ${name}! 🎉 Share your Invite Code (${invitationId}) with friends to connect.`, now]
       );
     }
 
-    res.status(201).json({ success: true, user });
+    res.status(201).json({
+      success: true,
+      user: { ...user, is_pro: Boolean(Number(user.is_pro)) },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -555,6 +585,34 @@ router.post('/users/profile', async (req, res) => {
     const updatedUser = await get(`SELECT * FROM users WHERE id = ?`, [currentId]);
 
     res.json({ success: true, user: updatedUser });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Fetch fresh authenticated user profile (syncs is_pro, avatar, status_mode from PostgreSQL)
+router.get('/users/me', async (req, res) => {
+  try {
+    const userId = req.headers['x-user-id'] || req.query.userId;
+    const phone = req.query.phone;
+    let user = null;
+    if (userId) {
+      user = await get(`SELECT * FROM users WHERE id = ?`, [String(userId)]);
+    }
+    if (!user && phone) {
+      user = await findUserByPhone(String(phone));
+    }
+    if (!user) {
+      return res.status(404).json({ error: 'User not found' });
+    }
+    res.json({
+      success: true,
+      user: {
+        ...user,
+        is_pro: Boolean(Number(user.is_pro)),
+        is_online: Boolean(Number(user.is_online)),
+      },
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
