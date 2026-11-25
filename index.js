@@ -181,19 +181,60 @@ function setupRedisPubSub() {
   }
 }
 
-// Active conversation room viewers tracking
+// Active conversation room viewers & multi-device live socket presence tracking
 const roomViewers = new Map();
+const userSockets = new Map(); // userId -> Set<socketId>
+app.set('userSockets', userSockets);
 
 // Real-time Socket.IO Handlers
 io.on('connection', (socket) => {
   // User presence & online status
-  socket.on('user_online', async ({ userId }) => {
+  socket.on('user_online', async ({ userId, statusMode }) => {
+    if (!userId) return;
     socket.userId = userId;
     socket.join(`user_${userId}`);
+    if (!userSockets.has(userId)) userSockets.set(userId, new Set());
+    userSockets.get(userId).add(socket.id);
+
     await redisModule.setUserOnline(userId, socket.id);
     const now = new Date().toISOString();
-    await run(`UPDATE users SET is_online = 1, last_seen = ? WHERE id = ?`, [now, userId]);
-    io.emit('user_status_changed', { userId, isOnline: true, lastSeen: now });
+    const existing = await get(`SELECT status_mode FROM users WHERE id = ?`, [userId]);
+    const effectiveMode = statusMode || (existing && existing.status_mode) || 'online';
+    const isOnlineNow = effectiveMode !== 'offline';
+
+    await run(`UPDATE users SET is_online = ?, status_mode = ?, last_seen = ? WHERE id = ?`, [
+      isOnlineNow ? 1 : 0,
+      effectiveMode,
+      now,
+      userId,
+    ]);
+    io.emit('user_status_changed', {
+      userId,
+      isOnline: isOnlineNow,
+      statusMode: effectiveMode,
+      lastSeen: now,
+    });
+  });
+
+  // Instant manual status mode switch (online / away / busy / offline)
+  socket.on('user_status_change', async ({ userId, statusMode }) => {
+    const uid = userId || socket.userId;
+    if (!uid || !statusMode) return;
+    const valid = ['online', 'away', 'busy', 'offline'].includes(statusMode) ? statusMode : 'online';
+    const isOnlineNow = valid !== 'offline';
+    const now = new Date().toISOString();
+    await run(`UPDATE users SET status_mode = ?, is_online = ?, last_seen = ? WHERE id = ?`, [
+      valid,
+      isOnlineNow ? 1 : 0,
+      now,
+      uid,
+    ]);
+    io.emit('user_status_changed', {
+      userId: uid,
+      isOnline: isOnlineNow,
+      statusMode: valid,
+      lastSeen: now,
+    });
   });
 
   // Conversation room joins & live viewers
@@ -410,22 +451,36 @@ io.on('connection', (socket) => {
     }
   });
 
-  // Disconnection cleanup
+  // Disconnection cleanup (only mark offline when user's last active socket disconnects)
   socket.on('disconnect', async () => {
     if (socket.userId) {
-      await redisModule.setUserOffline(socket.userId);
-      const now = new Date().toISOString();
-      await run(`UPDATE users SET is_online = 0, last_seen = ? WHERE id = ?`, [now, socket.userId]);
-      io.emit('user_status_changed', { userId: socket.userId, isOnline: false, lastSeen: now });
+      const uid = socket.userId;
+      const set = userSockets.get(uid);
+      if (set) {
+        set.delete(socket.id);
+        if (set.size === 0) userSockets.delete(uid);
+      }
+      if (!userSockets.has(uid)) {
+        await redisModule.setUserOffline(uid);
+        const now = new Date().toISOString();
+        await run(`UPDATE users SET is_online = 0, last_seen = ? WHERE id = ?`, [now, uid]);
+        io.emit('user_status_changed', {
+          userId: uid,
+          isOnline: false,
+          statusMode: 'offline',
+          lastSeen: now,
+        });
+      }
     }
     if (socket.activeConvId && roomViewers.has(socket.activeConvId)) {
-      const viewersMap = roomViewers.get(socket.activeConvId);
+      const convId = socket.activeConvId;
+      const viewersMap = roomViewers.get(convId);
       const userInfo = viewersMap.get(socket.id);
       viewersMap.delete(socket.id);
-      if (viewersMap.size === 0) roomViewers.delete(socket.activeConvId);
+      if (viewersMap.size === 0) roomViewers.delete(convId);
 
-      socket.to(`conv_${socket.activeConvId}`).emit('peer_viewing_chat', {
-        conversationId,
+      socket.to(`conv_${convId}`).emit('peer_viewing_chat', {
+        conversationId: convId,
         userId: socket.userId || (userInfo && userInfo.userId),
         isViewing: false
       });
@@ -437,7 +492,9 @@ io.on('connection', (socket) => {
 async function start() {
   try {
     await initDatabase();
-    console.log('✅ SQLite database initialized');
+    // Clear stale online flags left over from any previous container restart
+    await run(`UPDATE users SET is_online = 0 WHERE id != 'usr_boombot'`);
+    console.log('✅ PostgreSQL database initialized & stale presence cleared');
   } catch (err) {
     console.error('❌ Database error:', err.message);
   }

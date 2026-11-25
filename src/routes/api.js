@@ -618,6 +618,38 @@ router.get('/users/me', async (req, res) => {
   }
 });
 
+// Update live user status mode (online / away / busy / offline) & broadcast instantly
+router.post('/users/status', async (req, res) => {
+  try {
+    const userId = getCurrentUserId(req);
+    const mode = String(req.body?.statusMode || 'online').toLowerCase();
+    const valid = ['online', 'away', 'busy', 'offline'].includes(mode) ? mode : 'online';
+    const isOnlineNow = valid !== 'offline';
+    const now = new Date().toISOString();
+
+    await run(`UPDATE users SET status_mode = ?, is_online = ?, last_seen = ? WHERE id = ?`, [
+      valid,
+      isOnlineNow ? 1 : 0,
+      now,
+      userId,
+    ]);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('user_status_changed', {
+        userId,
+        isOnline: isOnlineNow,
+        statusMode: valid,
+        lastSeen: now,
+      });
+    }
+
+    res.json({ success: true, statusMode: valid, isOnline: isOnlineNow });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Update authenticated user profile (Display Name & Bio)
 router.patch('/users/me', async (req, res) => {
   try {
