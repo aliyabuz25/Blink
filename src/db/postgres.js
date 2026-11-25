@@ -175,10 +175,21 @@ async function initDatabase() {
     );
   `);
 
-  // Safe schema migrations for Pro GIF avatars, status modes, bio, Admin panel & WhatsApp OTP
+  // Safe schema migrations for Pro GIF avatars, status modes, bio, Stories/Media, Follows, Admin & OTP
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_pro INTEGER DEFAULT 0;`);
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status_mode VARCHAR(32) DEFAULT 'online';`);
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT '';`);
+  await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'image';`);
+  await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS is_story INTEGER DEFAULT 0;`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS follows (
+      follower_id VARCHAR(255) NOT NULL,
+      following_id VARCHAR(255) NOT NULL,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      PRIMARY KEY (follower_id, following_id)
+    );
+  `);
 
   await run(`
     CREATE TABLE IF NOT EXISTS admins (

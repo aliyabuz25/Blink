@@ -646,6 +646,92 @@ router.patch('/users/me', async (req, res) => {
   }
 });
 
+// Full Public Profile Viewer (in-tab profile inspection + follow status + memories & active stories)
+router.get('/users/:id/profile', async (req, res) => {
+  try {
+    const targetId = String(req.params.id || '').trim();
+    const viewerId = getCurrentUserId(req);
+
+    let user = await get(`SELECT * FROM users WHERE id = ?`, [targetId]);
+    if (!user) {
+      user = await get(`SELECT * FROM users WHERE wechat_id = ? OR username = ?`, [targetId, targetId]);
+    }
+    if (!user) return res.status(404).json({ error: 'User not found' });
+
+    const followersRow = await get(`SELECT COUNT(*)::int AS cnt FROM follows WHERE following_id = ?`, [user.id]);
+    const followingRow = await get(`SELECT COUNT(*)::int AS cnt FROM follows WHERE follower_id = ?`, [user.id]);
+    const isFollowingRow = viewerId
+      ? await get(`SELECT 1 AS ok FROM follows WHERE follower_id = ? AND following_id = ?`, [viewerId, user.id])
+      : null;
+
+    const posts = await all(
+      `SELECT * FROM stories WHERE user_id = ? AND COALESCE(is_story, 0) = 0 ORDER BY created_at DESC LIMIT 30`,
+      [user.id]
+    );
+    const activeStories = await all(
+      `SELECT * FROM stories WHERE user_id = ? AND is_story = 1 AND created_at >= NOW() - INTERVAL '24 hours' ORDER BY created_at DESC`,
+      [user.id]
+    );
+
+    res.json({
+      success: true,
+      profile: {
+        id: user.id,
+        name: user.name,
+        username: user.username,
+        avatar: user.avatar,
+        bio: user.bio || '',
+        phone: user.phone || '',
+        wechatId: user.wechat_id || user.username,
+        invitationId: user.invitation_id || '',
+        is_online: Boolean(Number(user.is_online)),
+        status_mode: user.status_mode || (Number(user.is_online) ? 'online' : 'offline'),
+        is_pro: Boolean(Number(user.is_pro)),
+        last_seen: user.last_seen,
+        created_at: user.created_at,
+        followersCount: followersRow?.cnt || 0,
+        followingCount: followingRow?.cnt || 0,
+        isFollowing: Boolean(isFollowingRow),
+        posts,
+        activeStories,
+      },
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Toggle Follow / Unfollow a user
+router.post('/users/:id/follow', async (req, res) => {
+  try {
+    const targetId = String(req.params.id || '').trim();
+    const viewerId = getCurrentUserId(req);
+    if (!viewerId || !targetId) return res.status(400).json({ error: 'Invalid user ID' });
+    if (viewerId === targetId) return res.status(400).json({ error: 'You cannot follow yourself' });
+
+    const existing = await get(
+      `SELECT 1 AS ok FROM follows WHERE follower_id = ? AND following_id = ?`,
+      [viewerId, targetId]
+    );
+    let following = false;
+    if (existing) {
+      await run(`DELETE FROM follows WHERE follower_id = ? AND following_id = ?`, [viewerId, targetId]);
+      following = false;
+    } else {
+      await run(
+        `INSERT INTO follows (follower_id, following_id) VALUES (?, ?) ON CONFLICT DO NOTHING`,
+        [viewerId, targetId]
+      );
+      following = true;
+    }
+
+    const followersRow = await get(`SELECT COUNT(*)::int AS cnt FROM follows WHERE following_id = ?`, [targetId]);
+    res.json({ success: true, following, followersCount: followersRow?.cnt || 0 });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.get('/users', async (req, res) => {
   try {
     const users = await all(`SELECT id, username, name, avatar FROM users WHERE id != 'usr_boombot' ORDER BY name ASC`);
@@ -976,11 +1062,22 @@ router.post('/translate', async (req, res) => {
   }
 });
 
-// Stories / Moments
+// Stories (24h Instagram-style) & Memories (Photo/Video/Text Feed)
 router.get('/stories', async (req, res) => {
   try {
-    const stories = await all(`SELECT * FROM stories ORDER BY created_at DESC`);
-    res.json({ stories });
+    const allRows = await all(`
+      SELECT s.*, u.is_pro AS author_is_pro, u.wechat_id AS author_wechat_id
+      FROM stories s
+      LEFT JOIN users u ON u.id = s.user_id
+      ORDER BY s.created_at DESC
+      LIMIT 100
+    `);
+    const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+    const activeStories = allRows.filter(
+      (r) => Number(r.is_story) === 1 && new Date(r.created_at).getTime() >= cutoff
+    );
+    const moments = allRows.filter((r) => Number(r.is_story || 0) === 0);
+    res.json({ stories: moments, moments, activeStories });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -989,17 +1086,31 @@ router.get('/stories', async (req, res) => {
 router.post('/stories', async (req, res) => {
   try {
     const currentId = getCurrentUserId(req);
-    const { content, image = null } = req.body;
-    if (!content || !content.trim()) {
-      return res.status(400).json({ error: 'Hikaye içeriği boş olamaz' });
+    const { content = '', image = null, mediaType = 'image', isStory = false } = req.body;
+    if ((!content || !String(content).trim()) && !image) {
+      return res.status(400).json({ error: 'Please add text, a photo, or a video' });
     }
 
     const storyId = 'story_' + Date.now();
     const user = await get(`SELECT name, avatar FROM users WHERE id = ?`, [currentId]);
+    const safeMediaType = image
+      ? mediaType === 'video' || /\.(mp4|webm|mov|m4v)(\?|$)/i.test(String(image))
+        ? 'video'
+        : 'image'
+      : 'none';
 
     await run(
-      `INSERT INTO stories (id, user_id, author_name, avatar, content, image, likes) VALUES (?, ?, ?, ?, ?, ?, 0)`,
-      [storyId, currentId, user ? user.name : 'Blink User', user ? user.avatar : '', content.trim(), image]
+      `INSERT INTO stories (id, user_id, author_name, avatar, content, image, media_type, is_story, likes) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0)`,
+      [
+        storyId,
+        currentId,
+        user ? user.name : 'Blink User',
+        user ? user.avatar : '',
+        String(content || '').trim(),
+        image,
+        safeMediaType,
+        isStory ? 1 : 0,
+      ]
     );
 
     const newStory = await get(`SELECT * FROM stories WHERE id = ?`, [storyId]);
