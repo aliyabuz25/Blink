@@ -1,7 +1,7 @@
 {
-  "name": "Blink",
-  "short_name": "Blink",
-  "description": "Blink - Real-time Messaging & Calling",
+  "name": "Bynk",
+  "short_name": "Bynk",
+  "description": "Bynk - Real-time Messaging & Calling",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
