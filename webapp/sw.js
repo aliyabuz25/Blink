@@ -29,16 +29,16 @@ self.addEventListener('push', (event) => {
     try {
       data = event.data.json();
     } catch (e) {
-      data = { title: 'Blink Bildirimi', body: event.data.text() };
+      data = { title: 'Bynk Bildirimi', body: event.data.text() };
     }
   }
 
-  const title = data.title || 'Blink';
+  const title = data.title || 'Bynk';
   const options = {
     body: data.body || 'Yeni bir bildiriminiz var.',
-    icon: data.icon || '/icons/icon-192.png',
-    badge: '/icons/icon-192.png',
-    tag: data.tag || 'blink-notification',
+    icon: data.icon || '/icon.png',
+    badge: '/icon.png',
+    tag: data.tag || 'bynk-notification',
     renotify: true,
     vibrate: data.vibrate || [200, 100, 200, 100, 400],
     data: data.data || { url: '/' },
