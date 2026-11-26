@@ -312,6 +312,16 @@ io.on('connection', (socket) => {
   socket.on('send_message', async ({ conversationId, senderId, content }) => {
     if (!content || !content.trim()) return;
 
+    const senderCheck = await get(`SELECT id, name, avatar, is_banned, ban_reason, muted_until FROM users WHERE id = ?`, [senderId]);
+    if (senderCheck && Number(senderCheck.is_banned)) {
+      socket.emit('admin_user_banned', { userId: senderId, banned: true, reason: senderCheck.ban_reason || 'Hesabınız yasaklandı.' });
+      return;
+    }
+    if (senderCheck && senderCheck.muted_until && new Date(senderCheck.muted_until).getTime() > Date.now()) {
+      socket.emit('admin_user_muted', { userId: senderId, mutedUntil: senderCheck.muted_until });
+      return;
+    }
+
     const messageId = 'm_' + Date.now();
     const now = new Date().toISOString();
 
@@ -320,7 +330,7 @@ io.on('connection', (socket) => {
       [messageId, conversationId, senderId, content.trim(), now]
     );
 
-    const sender = await get(`SELECT id, name, avatar FROM users WHERE id = ?`, [senderId]);
+    const sender = senderCheck;
 
     const fullMessage = {
       id: messageId,

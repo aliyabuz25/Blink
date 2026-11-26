@@ -53,6 +53,17 @@ function requireAdmin(req, res, next) {
   next();
 }
 
+async function logAudit(req, action, target = '', details = '') {
+  try {
+    const id = `aud_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+    const adminUser = req.admin?.username || 'system';
+    await run(
+      `INSERT INTO admin_audit_logs (id, admin_username, action, target, details) VALUES (?, ?, ?, ?, ?)`,
+      [id, adminUser, String(action), String(target || ''), String(details || '').slice(0, 500)]
+    );
+  } catch {}
+}
+
 // Admin Login
 router.post('/login', async (req, res) => {
   try {
@@ -166,13 +177,19 @@ router.patch('/users/:id', requireAdmin, async (req, res) => {
 
     const io = req.app.get('io');
     if (io) {
-      io.emit('user_pro_changed', { userId: id, is_pro: Boolean(isPro) });
+      io.emit('user_pro_changed', { userId: id, is_pro: Boolean(isPro), granted: !Boolean(existing.is_pro) && Boolean(isPro) });
       io.emit('admin_user_updated', {
         userId: id,
         name: updated?.name || name,
         wechat_id: updated?.wechat_id || wechatId,
         is_pro: Boolean(isPro),
       });
+    }
+
+    if (req.body.is_pro !== undefined && Boolean(isPro) !== Boolean(existing.is_pro)) {
+      logAudit(req, isPro ? 'grant_pulse' : 'revoke_pulse', updated?.username || id, `Pulse ${isPro ? 'activated' : 'removed'}`);
+    } else {
+      logAudit(req, 'edit_user', updated?.username || id, `name=${name}, id=${wechatId}`);
     }
 
     res.json({ success: true, user: updated });
@@ -728,6 +745,172 @@ router.delete('/moderation/keywords/:id', requireAdmin, async (req, res) => {
     invalidateKeywordCache();
     const keywords = await getCustomKeywords();
     res.json({ success: true, keywords });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
+// DISCORD-STYLE MANAGEMENT: BAN, MUTE, KICK, BROADCAST, SLOWMODE & AUDIT LOG
+// =========================================================
+router.post('/users/:id/ban', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (id === 'usr_boombot') return res.status(400).json({ error: 'Sistem kullanıcısı yasaklanamaz.' });
+    const user = await get(`SELECT * FROM users WHERE id = ?`, [id]);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+
+    const banned = req.body?.banned !== undefined ? Boolean(req.body.banned) : !Boolean(Number(user.is_banned));
+    const reason = String(req.body?.reason || '').trim() || (banned ? 'Topluluk kuralları ihlali' : '');
+
+    await run(`UPDATE users SET is_banned = ?, ban_reason = ?, is_online = CASE WHEN ? = 1 THEN 0 ELSE is_online END WHERE id = ?`, [
+      banned ? 1 : 0,
+      reason,
+      banned ? 1 : 0,
+      id,
+    ]);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('admin_user_banned', { userId: id, banned, reason });
+    }
+    logAudit(req, banned ? 'ban_user' : 'unban_user', user.username || id, reason);
+    res.json({ success: true, is_banned: banned, ban_reason: reason });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/users/:id/mute', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await get(`SELECT * FROM users WHERE id = ?`, [id]);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+
+    const minutes = Number(req.body?.minutes || 0);
+    const mutedUntil = minutes > 0 ? new Date(Date.now() + minutes * 60 * 1000).toISOString() : null;
+
+    await run(`UPDATE users SET muted_until = ? WHERE id = ?`, [mutedUntil, id]);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('admin_user_muted', { userId: id, mutedUntil, minutes });
+    }
+    logAudit(req, minutes > 0 ? 'mute_user' : 'unmute_user', user.username || id, minutes > 0 ? `${minutes}m timeout` : 'unmuted');
+    res.json({ success: true, muted_until: mutedUntil });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/users/:id/kick', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const user = await get(`SELECT * FROM users WHERE id = ?`, [id]);
+    if (!user) return res.status(404).json({ error: 'Kullanıcı bulunamadı.' });
+
+    const reason = String(req.body?.reason || '').trim() || 'Oturumunuz yönetici tarafından sonlandırıldı.';
+    await run(`UPDATE users SET is_online = 0 WHERE id = ?`, [id]);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('admin_force_kick', { userId: id, reason });
+    }
+    logAudit(req, 'kick_user', user.username || id, reason);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/broadcast', requireAdmin, async (req, res) => {
+  try {
+    const title = String(req.body?.title || '').trim() || 'Bynk Duyuru';
+    const message = String(req.body?.message || '').trim();
+    const type = ['info', 'warning', 'event'].includes(req.body?.type) ? req.body.type : 'info';
+    if (!message) return res.status(400).json({ error: 'Duyuru mesajı boş olamaz.' });
+
+    const payload = {
+      id: `bcast_${Date.now()}`,
+      title,
+      message,
+      type,
+      sentBy: req.admin?.username || 'admin',
+      sentAt: new Date().toISOString(),
+    };
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('admin_broadcast', payload);
+    }
+    logAudit(req, 'broadcast', type, `${title}: ${message}`);
+    res.json({ success: true, broadcast: payload });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/server/settings', requireAdmin, async (req, res) => {
+  try {
+    const rows = await all(
+      `SELECT key, value FROM admin_access_settings WHERE key IN ('slow_mode_seconds', 'maintenance_mode')`
+    );
+    const map = {};
+    for (const r of rows || []) map[r.key] = r.value;
+    res.json({
+      slow_mode_seconds: Number(map.slow_mode_seconds || 0),
+      maintenance_mode: map.maintenance_mode === '1',
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/server/settings', requireAdmin, async (req, res) => {
+  try {
+    const slowSec = req.body.slow_mode_seconds !== undefined ? Math.max(0, Math.min(300, Number(req.body.slow_mode_seconds) || 0)) : undefined;
+    const maintenance = req.body.maintenance_mode !== undefined ? (req.body.maintenance_mode ? '1' : '0') : undefined;
+
+    if (slowSec !== undefined) {
+      await run(
+        `INSERT INTO admin_access_settings (key, value) VALUES ('slow_mode_seconds', ?)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [String(slowSec)]
+      );
+    }
+    if (maintenance !== undefined) {
+      await run(
+        `INSERT INTO admin_access_settings (key, value) VALUES ('maintenance_mode', ?)
+         ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+        [maintenance]
+      );
+    }
+
+    const rows = await all(
+      `SELECT key, value FROM admin_access_settings WHERE key IN ('slow_mode_seconds', 'maintenance_mode')`
+    );
+    const map = {};
+    for (const r of rows || []) map[r.key] = r.value;
+    const settings = {
+      slow_mode_seconds: Number(map.slow_mode_seconds || 0),
+      maintenance_mode: map.maintenance_mode === '1',
+    };
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('admin_server_settings', settings);
+    }
+    logAudit(req, 'server_settings', 'global', `slow_mode=${settings.slow_mode_seconds}s, maintenance=${settings.maintenance_mode}`);
+    res.json({ success: true, ...settings });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/audit-logs', requireAdmin, async (req, res) => {
+  try {
+    const logs = await all(`SELECT * FROM admin_audit_logs ORDER BY created_at DESC LIMIT 200`);
+    res.json({ logs: logs || [] });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

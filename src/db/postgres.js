@@ -179,6 +179,9 @@ async function initDatabase() {
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_pro INTEGER DEFAULT 0;`);
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS status_mode VARCHAR(32) DEFAULT 'online';`);
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT '';`);
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned INTEGER DEFAULT 0;`);
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT DEFAULT '';`);
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until TIMESTAMP;`);
   await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'image';`);
   await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS is_story INTEGER DEFAULT 0;`);
 
@@ -286,6 +289,17 @@ async function initDatabase() {
       term VARCHAR(255) UNIQUE NOT NULL,
       lang VARCHAR(16) DEFAULT 'custom',
       severity VARCHAR(16) DEFAULT 'high',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS admin_audit_logs (
+      id VARCHAR(255) PRIMARY KEY,
+      admin_username VARCHAR(255) NOT NULL,
+      action VARCHAR(128) NOT NULL,
+      target VARCHAR(255) DEFAULT '',
+      details TEXT DEFAULT '',
       created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
     );
   `);

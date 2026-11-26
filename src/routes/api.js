@@ -937,6 +937,27 @@ router.post('/conversations/:id/messages', async (req, res) => {
 
     const cleanContent = content.trim();
 
+    // Enforce Ban / Timeout Mute / Slow Mode
+    const senderGuard = await get(`SELECT is_banned, ban_reason, muted_until FROM users WHERE id = ?`, [currentId]);
+    if (senderGuard && Number(senderGuard.is_banned)) {
+      return res.status(403).json({ error: senderGuard.ban_reason || 'Hesabınız yönetici tarafından yasaklandı.' });
+    }
+    if (senderGuard && senderGuard.muted_until && new Date(senderGuard.muted_until).getTime() > Date.now()) {
+      const minsLeft = Math.max(1, Math.ceil((new Date(senderGuard.muted_until).getTime() - Date.now()) / 60000));
+      return res.status(403).json({ error: `Susturuldunuz. ${minsLeft} dakika sonra tekrar mesaj gönderebilirsiniz.` });
+    }
+    const slowRow = await get(`SELECT value FROM admin_access_settings WHERE key = 'slow_mode_seconds'`);
+    const slowSec = Number(slowRow?.value || 0);
+    if (slowSec > 0) {
+      const lastOwn = await get(
+        `SELECT created_at FROM messages WHERE conversation_id = ? AND sender_id = ? ORDER BY created_at DESC LIMIT 1`,
+        [conversationId, currentId]
+      );
+      if (lastOwn && Date.now() - new Date(lastOwn.created_at).getTime() < slowSec * 1000) {
+        return res.status(429).json({ error: `Slow Mode aktif (${slowSec}sn). Lütfen biraz bekleyin.` });
+      }
+    }
+
     // Guard against duplicate rapid submissions (within 2 seconds with identical conversationId, senderId, and content)
     const recentDup = await get(
       `SELECT id, conversation_id, sender_id, content, status, created_at FROM messages 
