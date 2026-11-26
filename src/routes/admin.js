@@ -17,7 +17,7 @@ const {
   getCustomKeywords,
   scanExistingContent,
 } = require('../services/contentModeration');
-const { getKycConfig, saveKycConfig } = require('../services/idVerification');
+const { getKycConfig, saveKycConfig, createDiditSession } = require('../services/idVerification');
 
 const ADMIN_SECRET = process.env.JWT_SECRET || 'blink_admin_secret_key_2026';
 
@@ -917,16 +917,26 @@ router.get('/audit-logs', requireAdmin, async (req, res) => {
   }
 });
 
-// Hosted KYC (Didit v3) Configuration
+// Hosted KYC (Didit v3) Configuration, Test & Sessions Log
 router.get('/kyc/settings', requireAdmin, async (req, res) => {
   try {
     const cfg = await getKycConfig();
+    const recentSessions = await all(
+      `SELECT session_id, identity_id, email, display_name, method, status, doc_type, masked_id, signed_in_at, created_at
+       FROM kyc_sessions ORDER BY created_at DESC LIMIT 30`
+    ).catch(() => []);
     res.json({
       provider: cfg.provider,
       configured: cfg.configured,
       required: cfg.required,
       workflowId: cfg.workflowId,
       hasApiKey: Boolean(cfg.apiKey),
+      apiKeyMasked: cfg.apiKeyMasked || '',
+      hasWebhookSecret: Boolean(cfg.webhookSecret),
+      callbackUrl: `${cfg.siteUrl}/api/auth/kyc/callback`,
+      webhookUrl: `${cfg.siteUrl}/api/auth/kyc/webhook`,
+      allowedOrigin: cfg.siteUrl,
+      recentSessions: recentSessions || [],
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -936,8 +946,10 @@ router.get('/kyc/settings', requireAdmin, async (req, res) => {
 router.patch('/kyc/settings', requireAdmin, async (req, res) => {
   try {
     const cfg = await saveKycConfig({
+      clearApiKey: Boolean(req.body.clearApiKey),
       apiKey: req.body.apiKey !== undefined && String(req.body.apiKey).trim() ? req.body.apiKey : undefined,
       workflowId: req.body.workflowId,
+      webhookSecret: req.body.webhookSecret !== undefined && String(req.body.webhookSecret).trim() ? req.body.webhookSecret : undefined,
       required: req.body.required,
     });
     logAudit(req, 'kyc_settings', 'didit', `configured=${cfg.configured}, required=${cfg.required}`);
@@ -947,9 +959,21 @@ router.patch('/kyc/settings', requireAdmin, async (req, res) => {
       required: cfg.required,
       workflowId: cfg.workflowId,
       hasApiKey: Boolean(cfg.apiKey),
+      apiKeyMasked: cfg.apiKeyMasked || '',
+      hasWebhookSecret: Boolean(cfg.webhookSecret),
     });
   } catch (err) {
     res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/kyc/test', requireAdmin, async (req, res) => {
+  try {
+    const session = await createDiditSession({ vendorData: `admin_test_${Date.now()}` });
+    logAudit(req, 'kyc_test', 'didit', `session=${session.sessionId}`);
+    res.json({ success: true, ...session });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
   }
 });
 

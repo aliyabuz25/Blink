@@ -17,28 +17,43 @@ async function getKycConfig() {
     return kycCache.config;
   }
   const rows = await all(
-    `SELECT key, value FROM admin_access_settings WHERE key IN ('didit_api_key', 'didit_workflow_id', 'kyc_required')`
+    `SELECT key, value FROM admin_access_settings WHERE key IN ('didit_api_key', 'didit_workflow_id', 'didit_webhook_secret', 'kyc_required')`
   ).catch(() => []);
   const map = {};
   for (const r of rows || []) map[r.key] = r.value;
 
-  const apiKey = String(map.didit_api_key || process.env.DIDIT_API_KEY || '').trim();
-  const workflowId = String(map.didit_workflow_id || process.env.DIDIT_WORKFLOW_ID || '').trim();
+  const apiKey = String(map.didit_api_key !== undefined ? map.didit_api_key : (process.env.DIDIT_API_KEY || '')).trim();
+  const workflowId = String(map.didit_workflow_id !== undefined ? map.didit_workflow_id : (process.env.DIDIT_WORKFLOW_ID || '')).trim();
+  const webhookSecret = String(map.didit_webhook_secret !== undefined ? map.didit_webhook_secret : (process.env.DIDIT_WEBHOOK_SECRET || '')).trim();
   const required = map.kyc_required !== undefined ? map.kyc_required === '1' : Boolean(apiKey && workflowId);
+
+  const apiKeyMasked = apiKey
+    ? apiKey.length > 10
+      ? `${apiKey.slice(0, 4)}••••••••${apiKey.slice(-4)}`
+      : '••••••••'
+    : '';
 
   const config = {
     provider: 'didit',
     apiKey,
+    apiKeyMasked,
     workflowId,
+    webhookSecret,
     configured: Boolean(apiKey && workflowId),
     required,
+    siteUrl: SITE_URL,
   };
   kycCache = { ts: now, config };
   return config;
 }
 
-async function saveKycConfig({ apiKey, workflowId, required }) {
-  if (apiKey !== undefined) {
+async function saveKycConfig({ apiKey, clearApiKey, workflowId, webhookSecret, required }) {
+  if (clearApiKey) {
+    await run(
+      `INSERT INTO admin_access_settings (key, value) VALUES ('didit_api_key', '')
+       ON CONFLICT (key) DO UPDATE SET value = ''`
+    );
+  } else if (apiKey !== undefined) {
     await run(
       `INSERT INTO admin_access_settings (key, value) VALUES ('didit_api_key', ?)
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
@@ -50,6 +65,13 @@ async function saveKycConfig({ apiKey, workflowId, required }) {
       `INSERT INTO admin_access_settings (key, value) VALUES ('didit_workflow_id', ?)
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
       [String(workflowId).trim()]
+    );
+  }
+  if (webhookSecret !== undefined) {
+    await run(
+      `INSERT INTO admin_access_settings (key, value) VALUES ('didit_webhook_secret', ?)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [String(webhookSecret).trim()]
     );
   }
   if (required !== undefined) {
