@@ -8,7 +8,12 @@ const redisModule = require('../db/redis');
 const { triggerBoomBotReply } = require('../services/boombot');
 const whatsappService = require('../services/whatsapp');
 const { inspectAndReport } = require('../services/contentModeration');
-const { verifyIdImage, verifyIdVerificationToken } = require('../services/idVerification');
+const {
+  getKycConfig,
+  createDiditSession,
+  getDiditSessionStatus,
+  verifyIdVerificationToken,
+} = require('../services/idVerification');
 
 // Configure Multer for avatar and file uploads
 // In production or Electron packaged app, use a user-writable application data directory
@@ -293,35 +298,70 @@ router.post('/upload', generalUpload.single('file'), async (req, res) => {
   }
 });
 
-// Free OCR.space ID Card Image Verification (privacy-first: image processed in memory, never saved to disk)
-const idMemoryUpload = multer({
-  storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
-});
-
-router.post('/auth/verify-id', idMemoryUpload.single('idImage'), async (req, res) => {
+// Hosted Secure KYC (Didit v3) — opens Didit's own certified verification screen in a popup
+router.get('/auth/kyc/config', async (req, res) => {
   try {
-    if (!req.file || !req.file.buffer) {
-      return res.status(400).json({ error: 'Lütfen kimlik görseli yükleyin.' });
-    }
-    const mime = req.file.mimetype || 'image/jpeg';
-    if (!mime.startsWith('image/')) {
-      return res.status(400).json({ error: 'Sadece JPG, PNG veya WEBP görseller desteklenir.' });
-    }
-    const result = await verifyIdImage(req.file.buffer, mime);
-    if (!result.verified) {
-      return res.status(422).json({ verified: false, error: result.reason });
-    }
-    res.json(result);
-  } catch (err) {
-    res.status(502).json({
-      verified: false,
-      error: `Kimlik doğrulama servisi hatası: ${err.message}`,
+    const cfg = await getKycConfig();
+    res.json({
+      provider: cfg.provider,
+      configured: cfg.configured,
+      required: cfg.required,
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
   }
 });
 
-// Step 4 Completion: Register user (verifies WhatsApp OTP when Baileys is connected + ID verification)
+router.post('/auth/kyc/session', async (req, res) => {
+  try {
+    const vendorData = String(req.body?.phone || req.body?.vendorData || '').trim();
+    const proto = req.headers['x-forwarded-proto'] || req.protocol || 'https';
+    const host = req.headers['x-forwarded-host'] || req.get('host') || 'blink.octotech.az';
+    const callbackBaseUrl = `${proto}://${host}`;
+    const session = await createDiditSession({ vendorData, callbackBaseUrl });
+    res.json({ success: true, ...session });
+  } catch (err) {
+    res.status(400).json({ success: false, error: err.message });
+  }
+});
+
+router.get('/auth/kyc/status/:sessionId', async (req, res) => {
+  try {
+    const { sessionId } = req.params;
+    const result = await getDiditSessionStatus(sessionId);
+    res.json(result);
+  } catch (err) {
+    res.status(400).json({ verified: false, error: err.message });
+  }
+});
+
+router.get('/auth/kyc/callback', (req, res) => {
+  const sessionId = String(req.query.verificationSessionId || req.query.session_id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  const status = String(req.query.status || '').replace(/[^a-zA-Z0-9 _-]/g, '');
+  res.setHeader('Content-Type', 'text/html; charset=utf-8');
+  res.send(`<!doctype html>
+<html lang="tr">
+<head><meta charset="utf-8" /><title>Bynk Kimlik Doğrulama</title>
+<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0b0e;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:24px;}p{color:#a1a1aa;font-size:13px;}</style>
+</head>
+<body>
+  <div>
+    <h3>Doğrulama tamamlandı</h3>
+    <p>Bu pencere otomatik kapanacaktır. Kapanmazsa kapatıp Bynk uygulamasına dönebilirsiniz.</p>
+  </div>
+  <script>
+    try {
+      if (window.opener) {
+        window.opener.postMessage({ type: 'bynk:kyc-complete', sessionId: '${sessionId}', status: '${status}' }, '*');
+      }
+    } catch (e) {}
+    setTimeout(function() { try { window.close(); } catch (e) {} }, 900);
+  </script>
+</body>
+</html>`);
+});
+
+// Step 4 Completion: Register user (verifies WhatsApp OTP when Baileys is connected + Didit KYC when enabled)
 router.post('/auth/register', async (req, res) => {
   try {
     let { phone, name, avatar, otpCode, idVerificationToken } = req.body;
@@ -364,6 +404,7 @@ router.post('/auth/register', async (req, res) => {
       await run(`DELETE FROM otp_codes WHERE phone = ?`, [otpRow.phone]);
     }
 
+    const kycCfg = await getKycConfig();
     const verifiedIdPayload = verifyIdVerificationToken(idVerificationToken);
 
     if (user) {
@@ -379,15 +420,15 @@ router.post('/auth/register', async (req, res) => {
       );
       user = await get(`SELECT * FROM users WHERE id = ?`, [user.id]);
     } else {
-      if (!verifiedIdPayload) {
+      if (kycCfg.configured && kycCfg.required && !verifiedIdPayload) {
         return res.status(400).json({
-          error: 'Kayıt olmak için kimlik görseli doğrulaması zorunludur.',
+          error: 'Kayıt olmak için Didit kimlik doğrulamasını tamamlamalısınız.',
           idVerificationRequired: true,
         });
       }
       await run(
-        `INSERT INTO users (id, username, name, avatar, phone, invitation_id, wechat_id, is_online, is_pro, id_verified, id_doc_type) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 1, ?)`,
-        [userId, username, name, finalAvatar, normalizedPhone || null, invitationId, blinkId, verifiedIdPayload.docType || 'ID']
+        `INSERT INTO users (id, username, name, avatar, phone, invitation_id, wechat_id, is_online, is_pro, id_verified, id_doc_type) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
+        [userId, username, name, finalAvatar, normalizedPhone || null, invitationId, blinkId, verifiedIdPayload ? 1 : 0, verifiedIdPayload?.docType || '']
       );
       user = await get(`SELECT * FROM users WHERE id = ?`, [userId]);
 

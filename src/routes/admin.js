@@ -17,6 +17,7 @@ const {
   getCustomKeywords,
   scanExistingContent,
 } = require('../services/contentModeration');
+const { getKycConfig, saveKycConfig } = require('../services/idVerification');
 
 const ADMIN_SECRET = process.env.JWT_SECRET || 'blink_admin_secret_key_2026';
 
@@ -911,6 +912,42 @@ router.get('/audit-logs', requireAdmin, async (req, res) => {
   try {
     const logs = await all(`SELECT * FROM admin_audit_logs ORDER BY created_at DESC LIMIT 200`);
     res.json({ logs: logs || [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Hosted KYC (Didit v3) Configuration
+router.get('/kyc/settings', requireAdmin, async (req, res) => {
+  try {
+    const cfg = await getKycConfig();
+    res.json({
+      provider: cfg.provider,
+      configured: cfg.configured,
+      required: cfg.required,
+      workflowId: cfg.workflowId,
+      hasApiKey: Boolean(cfg.apiKey),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/kyc/settings', requireAdmin, async (req, res) => {
+  try {
+    const cfg = await saveKycConfig({
+      apiKey: req.body.apiKey !== undefined && String(req.body.apiKey).trim() ? req.body.apiKey : undefined,
+      workflowId: req.body.workflowId,
+      required: req.body.required,
+    });
+    logAudit(req, 'kyc_settings', 'didit', `configured=${cfg.configured}, required=${cfg.required}`);
+    res.json({
+      success: true,
+      configured: cfg.configured,
+      required: cfg.required,
+      workflowId: cfg.workflowId,
+      hasApiKey: Boolean(cfg.apiKey),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

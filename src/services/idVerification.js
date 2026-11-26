@@ -1,52 +1,71 @@
 const crypto = require('crypto');
+const { run, all } = require('../db/postgres');
 
 const ID_SECRET = process.env.JWT_SECRET || 'blink_id_verify_secret_2026';
-const OCR_SPACE_API_KEY = process.env.OCR_SPACE_API_KEY || 'helloworld';
+const DIDIT_BASE_URL = 'https://verification.didit.me';
+const SITE_URL = (process.env.SITE_URL || 'https://blink.octotech.az').replace(/\/$/, '');
 
-// Official Turkish 11-digit T.C. Kimlik No mathematical checksum validator
-function isValidTCKN(digits) {
-  if (!/^[1-9]\d{10}$/.test(digits)) return false;
-  const d = digits.split('').map(Number);
-  const oddSum = d[0] + d[2] + d[4] + d[6] + d[8];
-  const evenSum = d[1] + d[3] + d[5] + d[7];
-  const d10 = ((oddSum * 7 - evenSum) % 10 + 10) % 10;
-  if (d10 !== d[9]) return false;
-  const sum10 = d.slice(0, 10).reduce((a, b) => a + b, 0);
-  return sum10 % 10 === d[10];
+let kycCache = { ts: 0, config: null };
+
+function invalidateKycCache() {
+  kycCache = { ts: 0, config: null };
 }
 
-// Official Chinese 18-digit Resident ID ISO 7064 Mod 11-2 checksum validator
-function isValidChinaId(raw) {
-  const s = String(raw || '').toUpperCase();
-  if (!/^\d{17}[\dX]$/.test(s)) return false;
-  const weights = [7, 9, 10, 5, 8, 4, 2, 1, 6, 3, 7, 9, 10, 5, 8, 4, 2];
-  const map = ['1', '0', 'X', '9', '8', '7', '6', '5', '4', '3', '2'];
-  let sum = 0;
-  for (let i = 0; i < 17; i++) sum += Number(s[i]) * weights[i];
-  return map[sum % 11] === s[17];
+async function getKycConfig() {
+  const now = Date.now();
+  if (kycCache.config && now - kycCache.ts < 5000) {
+    return kycCache.config;
+  }
+  const rows = await all(
+    `SELECT key, value FROM admin_access_settings WHERE key IN ('didit_api_key', 'didit_workflow_id', 'kyc_required')`
+  ).catch(() => []);
+  const map = {};
+  for (const r of rows || []) map[r.key] = r.value;
+
+  const apiKey = String(map.didit_api_key || process.env.DIDIT_API_KEY || '').trim();
+  const workflowId = String(map.didit_workflow_id || process.env.DIDIT_WORKFLOW_ID || '').trim();
+  const required = map.kyc_required !== undefined ? map.kyc_required === '1' : Boolean(apiKey && workflowId);
+
+  const config = {
+    provider: 'didit',
+    apiKey,
+    workflowId,
+    configured: Boolean(apiKey && workflowId),
+    required,
+  };
+  kycCache = { ts: now, config };
+  return config;
 }
 
-function foldTurkish(str) {
-  return String(str || '')
-    .toUpperCase()
-    .replace(/İ/g, 'I')
-    .replace(/I/g, 'I')
-    .replace(/Ğ/g, 'G')
-    .replace(/Ü/g, 'U')
-    .replace(/Ş/g, 'S')
-    .replace(/Ö/g, 'O')
-    .replace(/Ç/g, 'C');
-}
-
-function maskDocNumber(num) {
-  const s = String(num || '');
-  if (s.length <= 6) return '***';
-  return `${s.slice(0, 3)}${'*'.repeat(Math.max(3, s.length - 6))}${s.slice(-3)}`;
+async function saveKycConfig({ apiKey, workflowId, required }) {
+  if (apiKey !== undefined) {
+    await run(
+      `INSERT INTO admin_access_settings (key, value) VALUES ('didit_api_key', ?)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [String(apiKey).trim()]
+    );
+  }
+  if (workflowId !== undefined) {
+    await run(
+      `INSERT INTO admin_access_settings (key, value) VALUES ('didit_workflow_id', ?)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [String(workflowId).trim()]
+    );
+  }
+  if (required !== undefined) {
+    await run(
+      `INSERT INTO admin_access_settings (key, value) VALUES ('kyc_required', ?)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [required ? '1' : '0']
+    );
+  }
+  invalidateKycCache();
+  return getKycConfig();
 }
 
 function signIdVerificationToken(payload) {
   const body = Buffer.from(
-    JSON.stringify({ ...payload, exp: Date.now() + 30 * 60 * 1000 })
+    JSON.stringify({ ...payload, exp: Date.now() + 60 * 60 * 1000 })
   ).toString('base64url');
   const sig = crypto.createHmac('sha256', ID_SECRET).update(body).digest('base64url');
   return `${body}.${sig}`;
@@ -66,134 +85,111 @@ function verifyIdVerificationToken(token) {
   }
 }
 
-// Call Free OCR.space API (OCREngine=2 supports Turkish, English, Latin & ID cards)
-async function extractTextViaFreeOcr(imageBuffer, mimeType = 'image/jpeg') {
-  const base64 = `data:${mimeType};base64,${imageBuffer.toString('base64')}`;
-  const form = new URLSearchParams();
-  form.append('apikey', OCR_SPACE_API_KEY);
-  form.append('base64Image', base64);
-  form.append('OCREngine', '2');
-  form.append('scale', 'true');
-  form.append('isTable', 'false');
-  form.append('detectOrientation', 'true');
-
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), 18000);
-  try {
-    const res = await fetch('https://api.ocr.space/parse/image', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: form.toString(),
-      signal: controller.signal,
-    });
-    const data = await res.json().catch(() => null);
-    if (!data || data.IsErroredOnProcessing) {
-      const msg = Array.isArray(data?.ErrorMessage) ? data.ErrorMessage.join(' ') : data?.ErrorMessage || 'OCR servisi yanıt vermedi';
-      throw new Error(msg);
-    }
-    const parsedResults = Array.isArray(data.ParsedResults) ? data.ParsedResults : [];
-    const text = parsedResults.map((r) => r.ParsedText || '').join('\n').trim();
-    return text;
-  } finally {
-    clearTimeout(timeout);
-  }
+function maskDocNumber(num) {
+  const s = String(num || '');
+  if (!s) return 'VERIFIED';
+  if (s.length <= 4) return '****';
+  return `${s.slice(0, 2)}${'*'.repeat(Math.max(3, s.length - 4))}${s.slice(-2)}`;
 }
 
-function analyzeIdCardText(rawText) {
-  const text = String(rawText || '').trim();
-  const folded = foldTurkish(text);
-  const lines = text
-    .split(/\r?\n/)
-    .map((l) => l.trim())
-    .filter(Boolean);
-
-  // 1. Check for valid Turkish 11-digit T.C. Kimlik No
-  const digitRuns = text.match(/\b\d{11}\b/g) || [];
-  const validTckn = digitRuns.find((d) => isValidTCKN(d));
-
-  // 2. Check for valid Chinese 18-digit Resident ID
-  const cnRuns = text.match(/\b\d{17}[\dXx]\b/g) || [];
-  const validCnId = cnRuns.find((d) => isValidChinaId(d));
-
-  // 3. Check for official ID / Passport / Driver License keywords & MRZ lines
-  const trKeywords = ['TURKIYE', 'CUMHURIYETI', 'KIMLIK', 'SOYADI', 'ADI', 'DOGUM', 'SERI', 'REPUBLIC OF TURKEY', 'IDENTITY CARD', 'SURUCU BELGESI'];
-  const intlKeywords = ['PASSPORT', 'PASAPORT', 'IDENTITY', 'NATIONAL ID', 'DRIVER', 'LICENSE', 'REPUBLIC', 'DATE OF BIRTH', 'SURNAME', 'GIVEN NAME'];
-  const trHits = trKeywords.filter((k) => folded.includes(k)).length;
-  const intlHits = intlKeywords.filter((k) => folded.includes(k)).length;
-  const hasMrz = /([A-Z0-9<]{25,})/.test(folded) && folded.includes('<<');
-
-  // Attempt best-effort name extraction from TR ID or MRZ
-  let extractedName = '';
-  for (let i = 0; i < lines.length - 1; i++) {
-    const lf = foldTurkish(lines[i]);
-    if ((lf.includes('ADI') && !lf.includes('SOYADI')) || lf.includes('GIVEN NAME')) {
-      const nextLine = lines[i + 1].replace(/[^a-zA-ZğüşöçıİĞÜŞÖÇ\s]/g, '').trim();
-      if (nextLine.length >= 2 && nextLine.length <= 40) {
-        extractedName = nextLine;
-        break;
-      }
-    }
+// Create Hosted Didit v3 Verification Session (returns Didit's own secure popup URL)
+async function createDiditSession({ vendorData = '', callbackBaseUrl = SITE_URL } = {}) {
+  const cfg = await getKycConfig();
+  if (!cfg.configured) {
+    throw new Error(
+      'Didit KYC API henüz yapılandırılmamış. Admin Panel → Access bölümünden ücretsiz Didit API Key ve Workflow ID girin (business.didit.me).'
+    );
   }
 
-  if (validTckn && (trHits >= 1 || text.length >= 25)) {
-    return {
-      verified: true,
-      docType: 'T.C. Kimlik Kartı',
-      maskedId: maskDocNumber(validTckn),
-      extractedName,
-    };
+  const callbackUrl = `${String(callbackBaseUrl || SITE_URL).replace(/\/$/, '')}/api/auth/kyc/callback`;
+  const res = await fetch(`${DIDIT_BASE_URL}/v3/session/`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'x-api-key': cfg.apiKey,
+    },
+    body: JSON.stringify({
+      workflow_id: cfg.workflowId,
+      callback: callbackUrl,
+      vendor_data: String(vendorData || `bynk_${Date.now()}`).slice(0, 128),
+    }),
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok || !data.url || !data.session_id) {
+    throw new Error(data.detail || data.message || data.error || `Didit oturumu oluşturulamadı (${res.status})`);
   }
 
-  if (validCnId) {
-    return {
-      verified: true,
-      docType: 'National ID (CN)',
-      maskedId: maskDocNumber(validCnId),
-      extractedName,
-    };
+  return {
+    sessionId: data.session_id,
+    url: data.url,
+    status: data.status || 'Not Started',
+  };
+}
+
+// Query Didit v3 Session Decision
+async function getDiditSessionStatus(sessionId) {
+  const cfg = await getKycConfig();
+  if (!cfg.configured) {
+    throw new Error('Didit KYC API yapılandırılmamış.');
   }
 
-  if (hasMrz || trHits >= 2 || intlHits >= 2) {
+  const res = await fetch(`${DIDIT_BASE_URL}/v3/session/${encodeURIComponent(sessionId)}/decision/`, {
+    method: 'GET',
+    headers: {
+      'x-api-key': cfg.apiKey,
+      Accept: 'application/json',
+    },
+  });
+
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    throw new Error(data.detail || data.message || `Didit durum sorgusu başarısız (${res.status})`);
+  }
+
+  const rawStatus = String(data.status || '').trim();
+  const normalized = rawStatus.toLowerCase();
+  const isApproved = normalized === 'approved';
+  const isDeclined = normalized === 'declined' || normalized === 'expired' || normalized === 'abandoned';
+
+  const idv = data.id_verification || data.kyc || {};
+  const docType = idv.document_type || 'Didit Verified ID';
+  const fullName =
+    idv.full_name ||
+    [idv.first_name, idv.last_name].filter(Boolean).join(' ').trim() ||
+    '';
+  const maskedId = maskDocNumber(idv.document_number || idv.personal_number || '');
+
+  if (isApproved) {
+    const idVerificationToken = signIdVerificationToken({
+      provider: 'didit',
+      sessionId,
+      docType,
+      maskedId,
+    });
     return {
       verified: true,
-      docType: trHits >= 2 ? 'T.C. Kimlik / Ehliyet' : hasMrz ? 'Passport / MRZ ID' : 'National ID',
-      maskedId: validTckn ? maskDocNumber(validTckn) : 'VERIFIED',
-      extractedName,
+      status: rawStatus,
+      docType,
+      maskedId,
+      extractedName: fullName,
+      idVerificationToken,
     };
   }
 
   return {
     verified: false,
-    reason: 'Kimlik belgesi okunamadı. Lütfen kimliğin ön yüzünü net ve iyi ışıkta çekip tekrar yükleyin.',
-  };
-}
-
-async function verifyIdImage(buffer, mimeType) {
-  const ocrText = await extractTextViaFreeOcr(buffer, mimeType);
-  if (!ocrText || ocrText.length < 8) {
-    return {
-      verified: false,
-      reason: 'Görselde okunabilir kimlik metni bulunamadı. Lütfen daha net bir fotoğraf yükleyin.',
-    };
-  }
-  const analysis = analyzeIdCardText(ocrText);
-  if (!analysis.verified) {
-    return analysis;
-  }
-  const token = signIdVerificationToken({
-    docType: analysis.docType,
-    maskedId: analysis.maskedId,
-  });
-  return {
-    verified: true,
-    docType: analysis.docType,
-    maskedId: analysis.maskedId,
-    extractedName: analysis.extractedName || '',
-    idVerificationToken: token,
+    declined: isDeclined,
+    status: rawStatus || 'In Progress',
+    error: isDeclined ? 'Kimlik doğrulaması reddedildi veya iptal edildi. Lütfen tekrar deneyin.' : '',
   };
 }
 
 module.exports = {
-  verifyIdImage,
+  getKycConfig,
+  saveKycConfig,
+  createDiditSession,
+  getDiditSessionStatus,
+  signIdVerificationToken,
   verifyIdVerificationToken,
 };
