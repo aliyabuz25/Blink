@@ -167,6 +167,12 @@ router.patch('/users/:id', requireAdmin, async (req, res) => {
     const io = req.app.get('io');
     if (io) {
       io.emit('user_pro_changed', { userId: id, is_pro: Boolean(isPro) });
+      io.emit('admin_user_updated', {
+        userId: id,
+        name: updated?.name || name,
+        wechat_id: updated?.wechat_id || wechatId,
+        is_pro: Boolean(isPro),
+      });
     }
 
     res.json({ success: true, user: updated });
@@ -186,6 +192,10 @@ router.delete('/users/:id', requireAdmin, async (req, res) => {
     await run(`DELETE FROM conversation_members WHERE user_id = ?`, [id]);
     await run(`DELETE FROM friend_requests WHERE sender_id = ? OR receiver_id = ?`, [id, id]);
     await run(`DELETE FROM users WHERE id = ?`, [id]);
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('admin_user_deleted', { userId: id });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -381,6 +391,10 @@ router.delete('/chats/:id', requireAdmin, async (req, res) => {
     await run(`DELETE FROM messages WHERE conversation_id = ?`, [id]);
     await run(`DELETE FROM conversation_members WHERE conversation_id = ?`, [id]);
     await run(`DELETE FROM conversations WHERE id = ?`, [id]);
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('conversation_deleted', { conversationId: id });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
@@ -393,8 +407,11 @@ router.delete('/messages/:id', requireAdmin, async (req, res) => {
     const msg = await get(`SELECT id, conversation_id FROM messages WHERE id = ?`, [id]);
     await run(`DELETE FROM messages WHERE id = ?`, [id]);
     const io = req.app.get('io');
-    if (io && msg?.conversation_id) {
-      io.to(`conv_${msg.conversation_id}`).emit('message_deleted', { messageId: id, conversationId: msg.conversation_id });
+    if (io) {
+      if (msg?.conversation_id) {
+        io.to(`conv_${msg.conversation_id}`).emit('message_deleted', { messageId: id, conversationId: msg.conversation_id });
+      }
+      io.emit('message_deleted', { messageId: id, conversationId: msg?.conversation_id || '' });
     }
     res.json({ success: true });
   } catch (err) {
@@ -637,14 +654,24 @@ router.delete('/moderation/alerts/:id/content', requireAdmin, async (req, res) =
     if (alert.source_type === 'message') {
       await run(`DELETE FROM messages WHERE id = ?`, [alert.source_id]);
       const io = req.app.get('io');
-      if (io && alert.conversation_id) {
-        io.to(`conv_${alert.conversation_id}`).emit('message_deleted', {
+      if (io) {
+        if (alert.conversation_id) {
+          io.to(`conv_${alert.conversation_id}`).emit('message_deleted', {
+            messageId: alert.source_id,
+            conversationId: alert.conversation_id,
+          });
+        }
+        io.emit('message_deleted', {
           messageId: alert.source_id,
-          conversationId: alert.conversation_id,
+          conversationId: alert.conversation_id || '',
         });
       }
     } else if (alert.source_type === 'story') {
       await run(`DELETE FROM stories WHERE id = ?`, [alert.source_id]);
+      const io = req.app.get('io');
+      if (io) {
+        io.emit('story_deleted', { storyId: alert.source_id });
+      }
     }
 
     await run(`UPDATE moderation_alerts SET status = 'deleted' WHERE id = ?`, [id]);
