@@ -182,6 +182,8 @@ async function initDatabase() {
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS is_banned INTEGER DEFAULT 0;`);
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ban_reason TEXT DEFAULT '';`);
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until TIMESTAMP;`);
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS id_verified INTEGER DEFAULT 0;`);
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS id_doc_type VARCHAR(64) DEFAULT '';`);
   await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'image';`);
   await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS is_story INTEGER DEFAULT 0;`);
   await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS channel_type VARCHAR(24) DEFAULT 'dm';`);

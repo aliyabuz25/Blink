@@ -8,6 +8,7 @@ const redisModule = require('../db/redis');
 const { triggerBoomBotReply } = require('../services/boombot');
 const whatsappService = require('../services/whatsapp');
 const { inspectAndReport } = require('../services/contentModeration');
+const { verifyIdImage, verifyIdVerificationToken } = require('../services/idVerification');
 
 // Configure Multer for avatar and file uploads
 // In production or Electron packaged app, use a user-writable application data directory
@@ -292,10 +293,38 @@ router.post('/upload', generalUpload.single('file'), async (req, res) => {
   }
 });
 
-// Step 4 Completion: Register user (verifies WhatsApp OTP when Baileys is connected)
+// Free OCR.space ID Card Image Verification (privacy-first: image processed in memory, never saved to disk)
+const idMemoryUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 5 * 1024 * 1024 },
+});
+
+router.post('/auth/verify-id', idMemoryUpload.single('idImage'), async (req, res) => {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: 'Lütfen kimlik görseli yükleyin.' });
+    }
+    const mime = req.file.mimetype || 'image/jpeg';
+    if (!mime.startsWith('image/')) {
+      return res.status(400).json({ error: 'Sadece JPG, PNG veya WEBP görseller desteklenir.' });
+    }
+    const result = await verifyIdImage(req.file.buffer, mime);
+    if (!result.verified) {
+      return res.status(422).json({ verified: false, error: result.reason });
+    }
+    res.json(result);
+  } catch (err) {
+    res.status(502).json({
+      verified: false,
+      error: `Kimlik doğrulama servisi hatası: ${err.message}`,
+    });
+  }
+});
+
+// Step 4 Completion: Register user (verifies WhatsApp OTP when Baileys is connected + ID verification)
 router.post('/auth/register', async (req, res) => {
   try {
-    let { phone, name, avatar, otpCode } = req.body;
+    let { phone, name, avatar, otpCode, idVerificationToken } = req.body;
     if (!name || !name.trim()) {
       return res.status(400).json({ error: 'Full name is required' });
     }
@@ -335,6 +364,8 @@ router.post('/auth/register', async (req, res) => {
       await run(`DELETE FROM otp_codes WHERE phone = ?`, [otpRow.phone]);
     }
 
+    const verifiedIdPayload = verifyIdVerificationToken(idVerificationToken);
+
     if (user) {
       if (Number(user.is_banned)) {
         return res.status(403).json({
@@ -342,12 +373,21 @@ router.post('/auth/register', async (req, res) => {
         });
       }
       const currentBlinkId = user.wechat_id || user.username || blinkId;
-      await run(`UPDATE users SET name = ?, avatar = ?, wechat_id = ?, is_online = 1, last_seen = NOW() WHERE id = ?`, [name, finalAvatar, currentBlinkId, user.id]);
+      await run(
+        `UPDATE users SET name = ?, avatar = ?, wechat_id = ?, is_online = 1, last_seen = NOW(), id_verified = CASE WHEN ? = 1 THEN 1 ELSE COALESCE(id_verified, 0) END, id_doc_type = CASE WHEN ? != '' THEN ? ELSE COALESCE(id_doc_type, '') END WHERE id = ?`,
+        [name, finalAvatar, currentBlinkId, verifiedIdPayload ? 1 : 0, verifiedIdPayload?.docType || '', verifiedIdPayload?.docType || '', user.id]
+      );
       user = await get(`SELECT * FROM users WHERE id = ?`, [user.id]);
     } else {
+      if (!verifiedIdPayload) {
+        return res.status(400).json({
+          error: 'Kayıt olmak için kimlik görseli doğrulaması zorunludur.',
+          idVerificationRequired: true,
+        });
+      }
       await run(
-        `INSERT INTO users (id, username, name, avatar, phone, invitation_id, wechat_id, is_online, is_pro) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0)`,
-        [userId, username, name, finalAvatar, normalizedPhone || null, invitationId, blinkId]
+        `INSERT INTO users (id, username, name, avatar, phone, invitation_id, wechat_id, is_online, is_pro, id_verified, id_doc_type) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, 1, ?)`,
+        [userId, username, name, finalAvatar, normalizedPhone || null, invitationId, blinkId, verifiedIdPayload.docType || 'ID']
       );
       user = await get(`SELECT * FROM users WHERE id = ?`, [userId]);
 
