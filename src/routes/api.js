@@ -11,6 +11,7 @@ const { inspectAndReport } = require('../services/contentModeration');
 const {
   getKycConfig,
   createDiditSession,
+  exchangeDiditAuthCode,
   getDiditSessionStatus,
   recordDiditPayload,
   verifyIdVerificationToken,
@@ -426,10 +427,15 @@ router.post('/auth/kyc/callback', async (req, res) => {
 });
 
 router.get('/auth/kyc/callback', async (req, res) => {
-  const sessionId = String(req.query.verificationSessionId || req.query.session_id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  const code = String(req.query.code || '').trim();
+  const state = String(req.query.state || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  const sessionId = String(req.query.verificationSessionId || req.query.session_id || state || '').replace(/[^a-zA-Z0-9_-]/g, '');
   const identityId = String(req.query.identity_id || '').replace(/[^a-zA-Z0-9_-]/g, '');
   const status = String(req.query.status || '').replace(/[^a-zA-Z0-9 _-]/g, '');
-  if (sessionId || identityId) {
+
+  if (code) {
+    await exchangeDiditAuthCode({ code, state: state || sessionId }).catch(() => {});
+  } else if (sessionId || identityId) {
     await recordDiditPayload({
       session_id: sessionId || identityId,
       identity_id: identityId,
@@ -443,21 +449,21 @@ router.get('/auth/kyc/callback', async (req, res) => {
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!doctype html>
 <html lang="tr">
-<head><meta charset="utf-8" /><title>Bynk Kimlik Doğrulama</title>
+<head><meta charset="utf-8" /><title>Bynk Didit Giriş</title>
 <style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0b0e;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:24px;}p{color:#a1a1aa;font-size:13px;}</style>
 </head>
 <body>
   <div>
-    <h3>Doğrulama tamamlandı</h3>
+    <h3>Giriş onaylandı</h3>
     <p>Bu pencere otomatik kapanacaktır. Kapanmazsa kapatıp Bynk uygulamasına dönebilirsiniz.</p>
   </div>
   <script>
     try {
       if (window.opener) {
-        window.opener.postMessage({ type: 'bynk:kyc-complete', sessionId: '${sessionId || identityId}', identityId: '${identityId}', status: '${status}' }, '*');
+        window.opener.postMessage({ type: 'bynk:kyc-complete', sessionId: '${sessionId || identityId}', identityId: '${identityId}', status: '${status || 'Approved'}' }, '*');
       }
     } catch (e) {}
-    setTimeout(function() { try { window.close(); } catch (e) {} }, 900);
+    setTimeout(function() { try { window.close(); } catch (e) {} }, 700);
   </script>
 </body>
 </html>`);
