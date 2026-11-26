@@ -827,6 +827,8 @@ router.get('/conversations', async (req, res) => {
         COALESCE(c.is_public, 0) as is_public,
         COALESCE(c.pinned_message_id, '') as pinned_message_id,
         COALESCE(c.pinned_message_text, '') as pinned_message_text,
+        COALESCE(c.parent_channel_id, '') as parent_channel_id,
+        COALESCE(cm.role, 'member') as my_role,
         (SELECT COUNT(*)::int FROM conversation_members cm2 WHERE cm2.conversation_id = c.id) as member_count,
         (
           SELECT json_build_object('content', m.content, 'created_at', m.created_at, 'sender_id', m.sender_id, 'status', m.status)::text
@@ -867,6 +869,8 @@ router.get('/conversations', async (req, res) => {
         is_public: Boolean(conv.is_public),
         pinned_message_id: conv.pinned_message_id || '',
         pinned_message_text: conv.pinned_message_text || '',
+        parent_channel_id: conv.parent_channel_id || '',
+        my_role: conv.my_role || 'member',
         member_count: Number(conv.member_count || 0),
         is_favorite: Boolean(conv.is_favorite),
         is_online: Boolean(conv.is_online),
@@ -916,6 +920,7 @@ router.get('/channels', async (req, res) => {
       SELECT
         c.id,
         c.name,
+        COALESCE(c.avatar, '') AS avatar,
         COALESCE(c.topic, '') AS topic,
         COALESCE(c.is_public, 0) AS is_public,
         COALESCE(c.created_by, '') AS created_by,
@@ -924,10 +929,12 @@ router.get('/channels', async (req, res) => {
         c.created_at,
         c.updated_at,
         (SELECT COUNT(*)::int FROM conversation_members cm WHERE cm.conversation_id = c.id) AS member_count,
+        (SELECT COUNT(*)::int FROM conversations r WHERE r.parent_channel_id = c.id) AS room_count,
         (SELECT COUNT(*)::int FROM messages m WHERE m.conversation_id = c.id) AS message_count,
         EXISTS(SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?) AS joined
       FROM conversations c
       WHERE c.channel_type = 'channel'
+        AND COALESCE(c.parent_channel_id, '') = ''
         AND (c.is_public = 1 OR EXISTS(SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?))
       ORDER BY c.updated_at DESC, c.created_at DESC
       LIMIT 100
@@ -940,6 +947,7 @@ router.get('/channels', async (req, res) => {
         is_public: Boolean(Number(r.is_public)),
         joined: Boolean(r.joined),
         member_count: Number(r.member_count || 0),
+        room_count: Number(r.room_count || 0) + 1,
         message_count: Number(r.message_count || 0),
       })),
     });
@@ -961,31 +969,39 @@ router.post('/channels', async (req, res) => {
       return res.status(400).json({ error: 'Kanal adı en az 2 karakter olmalıdır.' });
     }
     const topic = String(req.body?.topic || '').trim().slice(0, 140);
+    const avatar = String(req.body?.avatar || '').trim().slice(0, 500);
     const isPublic = req.body?.isPublic !== false ? 1 : 0;
     const memberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds : [];
     const chId = 'ch_' + Date.now();
     const now = new Date().toISOString();
 
     await run(
-      `INSERT INTO conversations (id, name, avatar, is_group, channel_type, topic, is_public, created_by, created_at, updated_at)
-       VALUES (?, ?, '', 1, 'channel', ?, ?, ?, ?, ?)`,
-      [chId, slug, topic, isPublic, currentId, now, now]
+      `INSERT INTO conversations (id, name, avatar, is_group, channel_type, topic, is_public, created_by, parent_channel_id, created_at, updated_at)
+       VALUES (?, ?, ?, 1, 'channel', ?, ?, ?, '', ?, ?)`,
+      [chId, slug, avatar, topic, isPublic, currentId, now, now]
     );
 
     const uniqueMembers = [...new Set([currentId, ...memberIds.map((m) => String(m)).filter(Boolean)])];
     for (const uid of uniqueMembers) {
-      await run(`INSERT OR IGNORE INTO conversation_members (conversation_id, user_id) VALUES (?, ?)`, [chId, uid]);
+      const role = uid === currentId ? 'owner' : 'member';
+      await run(
+        `INSERT INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?) ON CONFLICT (conversation_id, user_id) DO UPDATE SET role = EXCLUDED.role`,
+        [chId, uid, role]
+      );
     }
 
     const channel = {
       id: chId,
       name: slug,
+      avatar,
       topic,
       is_group: true,
       channel_type: 'channel',
+      parent_channel_id: '',
       is_public: Boolean(isPublic),
       created_by: currentId,
       member_count: uniqueMembers.length,
+      room_count: 1,
       joined: true,
       created_at: now,
       updated_at: now,
@@ -1001,6 +1017,206 @@ router.post('/channels', async (req, res) => {
   }
 });
 
+// Update channel logo, name, topic or visibility (owner/admin)
+router.patch('/channels/:id', async (req, res) => {
+  try {
+    const currentId = getCurrentUserId(req);
+    const { id } = req.params;
+    const ch = await get(`SELECT * FROM conversations WHERE id = ?`, [id]);
+    if (!ch) return res.status(404).json({ error: 'Kanal bulunamadı.' });
+
+    const rootId = ch.parent_channel_id || ch.id;
+    const mem = await get(`SELECT role FROM conversation_members WHERE conversation_id = ? AND user_id = ?`, [rootId, currentId]);
+    const isAllowed = ch.created_by === currentId || mem?.role === 'owner' || mem?.role === 'admin' || ch.created_by === 'system';
+    if (!isAllowed) {
+      return res.status(403).json({ error: 'Bu kanalı düzenleme yetkiniz yok.' });
+    }
+
+    const name = req.body.name !== undefined ? String(req.body.name).trim().replace(/^#+/, '').slice(0, 32) || ch.name : ch.name;
+    const topic = req.body.topic !== undefined ? String(req.body.topic).trim().slice(0, 140) : ch.topic;
+    const avatar = req.body.avatar !== undefined ? String(req.body.avatar).trim().slice(0, 500) : ch.avatar;
+    const isPublic = req.body.isPublic !== undefined ? (req.body.isPublic ? 1 : 0) : ch.is_public;
+
+    await run(`UPDATE conversations SET name = ?, topic = ?, avatar = ?, is_public = ? WHERE id = ?`, [
+      name,
+      topic,
+      avatar,
+      isPublic,
+      rootId,
+    ]);
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('channel_updated', { channelId: rootId, name, topic, avatar, is_public: Boolean(isPublic) });
+    }
+    res.json({ success: true, channel: { id: rootId, name, topic, avatar, is_public: Boolean(isPublic) } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// List rooms inside a channel (main room + sub-rooms)
+router.get('/channels/:id/rooms', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const target = await get(`SELECT id, parent_channel_id FROM conversations WHERE id = ?`, [id]);
+    const rootId = target?.parent_channel_id || id;
+
+    const root = await get(
+      `SELECT id, name, COALESCE(avatar, '') AS avatar, COALESCE(topic, '') AS topic, COALESCE(pinned_message_text, '') AS pinned_message_text, created_by
+       FROM conversations WHERE id = ?`,
+      [rootId]
+    );
+    if (!root) return res.status(404).json({ error: 'Kanal bulunamadı.' });
+
+    const subRooms = await all(
+      `SELECT id, name, COALESCE(topic, '') AS topic, COALESCE(pinned_message_text, '') AS pinned_message_text, parent_channel_id, created_at
+       FROM conversations WHERE parent_channel_id = ? ORDER BY created_at ASC`,
+      [rootId]
+    );
+
+    const rooms = [
+      { id: root.id, name: 'genel', isMain: true, topic: root.topic, pinned_message_text: root.pinned_message_text, parent_channel_id: '' },
+      ...(subRooms || []).map((r) => ({ ...r, isMain: false })),
+    ];
+
+    res.json({ channel: root, rooms });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Create a new room inside a channel
+router.post('/channels/:id/rooms', async (req, res) => {
+  try {
+    const currentId = getCurrentUserId(req);
+    const { id } = req.params;
+    const target = await get(`SELECT id, parent_channel_id, avatar, is_public FROM conversations WHERE id = ?`, [id]);
+    if (!target) return res.status(404).json({ error: 'Kanal bulunamadı.' });
+    const rootId = target.parent_channel_id || target.id;
+
+    const rawName = String(req.body?.name || '').trim().replace(/^#+/, '');
+    const slug = rawName
+      .toLowerCase()
+      .replace(/[^a-z0-9ğüşöçıİ\s_-]/gi, '')
+      .replace(/\s+/g, '-')
+      .slice(0, 28);
+    if (!slug || slug.length < 2) {
+      return res.status(400).json({ error: 'Oda adı en az 2 karakter olmalıdır.' });
+    }
+    const topic = String(req.body?.topic || '').trim().slice(0, 120);
+    const roomId = `rm_${Date.now()}`;
+    const now = new Date().toISOString();
+
+    await run(
+      `INSERT INTO conversations (id, name, avatar, is_group, channel_type, topic, is_public, created_by, parent_channel_id, created_at, updated_at)
+       VALUES (?, ?, ?, 1, 'channel', ?, ?, ?, ?, ?, ?)`,
+      [roomId, slug, target.avatar || '', topic, Number(target.is_public || 1), currentId, rootId, now, now]
+    );
+
+    // Sync all parent channel members into the new room
+    const parentMembers = await all(`SELECT user_id, COALESCE(role, 'member') AS role FROM conversation_members WHERE conversation_id = ?`, [rootId]);
+    const memberSet = new Map();
+    for (const pm of parentMembers || []) memberSet.set(pm.user_id, pm.role);
+    if (!memberSet.has(currentId)) memberSet.set(currentId, 'owner');
+    for (const [uid, role] of memberSet.entries()) {
+      await run(
+        `INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)`,
+        [roomId, uid, role]
+      );
+    }
+
+    const room = { id: roomId, name: slug, topic, isMain: false, parent_channel_id: rootId, created_at: now };
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('channel_room_created', { channelId: rootId, room });
+    }
+    res.status(201).json({ success: true, room });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Channel members & roles list (for right-side Discord-style member panel)
+router.get('/channels/:id/members', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const target = await get(`SELECT id, parent_channel_id, created_by FROM conversations WHERE id = ?`, [id]);
+    const rootId = target?.parent_channel_id || id;
+
+    const members = await all(
+      `
+      SELECT
+        u.id,
+        u.name,
+        u.username,
+        u.avatar,
+        u.is_online,
+        COALESCE(u.status_mode, CASE WHEN u.is_online = 1 THEN 'online' ELSE 'offline' END) AS status_mode,
+        COALESCE(u.is_pro, 0) AS is_pro,
+        COALESCE(cm.role, CASE WHEN c.created_by = u.id THEN 'owner' ELSE 'member' END) AS role
+      FROM conversation_members cm
+      JOIN users u ON u.id = cm.user_id
+      JOIN conversations c ON c.id = cm.conversation_id
+      WHERE cm.conversation_id = ?
+      ORDER BY
+        CASE COALESCE(cm.role, 'member')
+          WHEN 'owner' THEN 1
+          WHEN 'admin' THEN 2
+          WHEN 'mod' THEN 3
+          ELSE 4
+        END ASC,
+        u.is_online DESC,
+        u.name ASC
+      `,
+      [rootId]
+    );
+
+    res.json({
+      channelId: rootId,
+      members: (members || []).map((m) => ({
+        ...m,
+        is_online: Boolean(Number(m.is_online)),
+        is_pro: Boolean(Number(m.is_pro)),
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// Update member role inside channel (owner/admin only)
+router.patch('/channels/:id/members/:userId/role', async (req, res) => {
+  try {
+    const currentId = getCurrentUserId(req);
+    const { id, userId } = req.params;
+    const nextRole = ['admin', 'mod', 'member'].includes(req.body?.role) ? req.body.role : 'member';
+
+    const target = await get(`SELECT id, parent_channel_id, created_by FROM conversations WHERE id = ?`, [id]);
+    const rootId = target?.parent_channel_id || id;
+    const requester = await get(`SELECT role FROM conversation_members WHERE conversation_id = ? AND user_id = ?`, [rootId, currentId]);
+    const canManage = target?.created_by === currentId || requester?.role === 'owner' || requester?.role === 'admin' || target?.created_by === 'system';
+    if (!canManage) {
+      return res.status(403).json({ error: 'Rol değiştirme yetkiniz yok.' });
+    }
+
+    await run(`UPDATE conversation_members SET role = ? WHERE conversation_id = ? AND user_id = ?`, [nextRole, rootId, userId]);
+    // Also sync role to sub-rooms
+    await run(
+      `UPDATE conversation_members SET role = ? WHERE user_id = ? AND conversation_id IN (SELECT id FROM conversations WHERE parent_channel_id = ?)`,
+      [nextRole, userId, rootId]
+    );
+
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('channel_member_role_updated', { channelId: rootId, userId, role: nextRole });
+    }
+    res.json({ success: true, userId, role: nextRole });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/channels/:id/join', async (req, res) => {
   try {
     const currentId = getCurrentUserId(req);
@@ -1011,7 +1227,14 @@ router.post('/channels/:id/join', async (req, res) => {
       const member = await get(`SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?`, [id, currentId]);
       if (!member) return res.status(403).json({ error: 'Bu kanal gizlidir.' });
     }
-    await run(`INSERT OR IGNORE INTO conversation_members (conversation_id, user_id) VALUES (?, ?)`, [id, currentId]);
+    const existingCount = await get(`SELECT COUNT(*)::int AS cnt FROM conversation_members WHERE conversation_id = ?`, [id]);
+    const initialRole = (!existingCount || Number(existingCount.cnt) === 0) ? 'owner' : 'member';
+    await run(`INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)`, [id, currentId, initialRole]);
+    // Also join all sub-rooms of this channel
+    const subRooms = await all(`SELECT id FROM conversations WHERE parent_channel_id = ?`, [id]);
+    for (const rm of subRooms || []) {
+      await run(`INSERT OR IGNORE INTO conversation_members (conversation_id, user_id, role) VALUES (?, ?, ?)`, [rm.id, currentId, initialRole]);
+    }
     res.json({ success: true, channelId: id });
   } catch (err) {
     res.status(500).json({ error: err.message });

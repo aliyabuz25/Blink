@@ -190,6 +190,8 @@ async function initDatabase() {
   await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS created_by VARCHAR(255) DEFAULT '';`);
   await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned_message_id VARCHAR(255) DEFAULT '';`);
   await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned_message_text TEXT DEFAULT '';`);
+  await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS parent_channel_id VARCHAR(255) DEFAULT '';`);
+  await run(`ALTER TABLE conversation_members ADD COLUMN IF NOT EXISTS role VARCHAR(32) DEFAULT 'member';`);
   await run(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reactions TEXT DEFAULT '{}';`);
 
   await run(`
