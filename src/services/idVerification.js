@@ -5,7 +5,21 @@ const ID_SECRET = process.env.JWT_SECRET || 'blink_id_verify_secret_2026';
 const DIDIT_BASE_URL = 'https://verification.didit.me';
 const DIDIT_AUTH_BASE = 'https://apx.didit.me/auth/v2/authentication';
 const DEFAULT_DIDIT_AUTH_APP_ID = process.env.DIDIT_AUTH_APP_ID || '3290f707-aa2f-439c-aa0a-87f04622d396';
+const DEFAULT_DIDIT_PUBLISHABLE_KEY =
+  process.env.DIDIT_PUBLISHABLE_KEY ||
+  'pk_test_aHR0cHM6Ly9ieW5rY2hhdC1iM2Y2NGRlNGMwMjFkZDE3MjExODY1Y2JhYzg5MWFlMi5zYW5kYm94LmF1dGguZGlkaXQubWU';
 const SITE_URL = (process.env.SITE_URL || 'https://blink.octotech.az').replace(/\/$/, '');
+
+function decodeIssuerFromPublishableKey(pk) {
+  try {
+    const raw = String(pk || '').trim().replace(/^pk_(test|live)_/, '');
+    if (!raw) return '';
+    const decoded = Buffer.from(raw, 'base64url').toString('utf8').replace(/\/$/, '');
+    return decoded.startsWith('https://') || decoded.startsWith('http://') ? decoded : '';
+  } catch {
+    return '';
+  }
+}
 
 // Short-lived PKCE verifier store keyed by OAuth state
 const pkceStore = new Map();
@@ -28,7 +42,7 @@ async function getKycConfig() {
     return kycCache.config;
   }
   const rows = await all(
-    `SELECT key, value FROM admin_access_settings WHERE key IN ('didit_api_key', 'didit_workflow_id', 'didit_webhook_secret', 'didit_auth_app_id', 'kyc_required')`
+    `SELECT key, value FROM admin_access_settings WHERE key IN ('didit_api_key', 'didit_workflow_id', 'didit_webhook_secret', 'didit_auth_app_id', 'didit_publishable_key', 'kyc_required')`
   ).catch(() => []);
   const map = {};
   for (const r of rows || []) map[r.key] = r.value;
@@ -36,6 +50,8 @@ async function getKycConfig() {
   const apiKey = String(map.didit_api_key !== undefined ? map.didit_api_key : (process.env.DIDIT_API_KEY || '')).trim();
   const workflowId = String(map.didit_workflow_id !== undefined ? map.didit_workflow_id : (process.env.DIDIT_WORKFLOW_ID || '')).trim();
   const authAppId = String(map.didit_auth_app_id !== undefined && map.didit_auth_app_id.trim() ? map.didit_auth_app_id : DEFAULT_DIDIT_AUTH_APP_ID).trim();
+  const publishableKey = String(map.didit_publishable_key !== undefined && map.didit_publishable_key.trim() ? map.didit_publishable_key : DEFAULT_DIDIT_PUBLISHABLE_KEY).trim();
+  const issuerUrl = decodeIssuerFromPublishableKey(publishableKey);
   const webhookSecret = String(map.didit_webhook_secret !== undefined ? map.didit_webhook_secret : (process.env.DIDIT_WEBHOOK_SECRET || '')).trim();
   const required = map.kyc_required !== undefined ? map.kyc_required === '1' : true;
 
@@ -51,8 +67,10 @@ async function getKycConfig() {
     apiKeyMasked,
     workflowId,
     authAppId,
+    publishableKey,
+    issuerUrl,
     webhookSecret,
-    configured: Boolean(authAppId || (apiKey && workflowId)),
+    configured: Boolean(authAppId || publishableKey || (apiKey && workflowId)),
     required,
     siteUrl: SITE_URL,
   };
@@ -60,7 +78,7 @@ async function getKycConfig() {
   return config;
 }
 
-async function saveKycConfig({ apiKey, clearApiKey, workflowId, authAppId, webhookSecret, required }) {
+async function saveKycConfig({ apiKey, clearApiKey, workflowId, authAppId, publishableKey, webhookSecret, required }) {
   if (clearApiKey) {
     await run(
       `INSERT INTO admin_access_settings (key, value) VALUES ('didit_api_key', '')
@@ -85,6 +103,13 @@ async function saveKycConfig({ apiKey, clearApiKey, workflowId, authAppId, webho
       `INSERT INTO admin_access_settings (key, value) VALUES ('didit_auth_app_id', ?)
        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
       [String(authAppId).trim()]
+    );
+  }
+  if (publishableKey !== undefined) {
+    await run(
+      `INSERT INTO admin_access_settings (key, value) VALUES ('didit_publishable_key', ?)
+       ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+      [String(publishableKey).trim()]
     );
   }
   if (webhookSecret !== undefined) {
@@ -212,17 +237,18 @@ async function createDiditSession({ vendorData = '', callbackBaseUrl = SITE_URL 
   };
 }
 
-// Exchange PKCE authorization code from Didit Auth v2 callback
+// Exchange PKCE authorization code from Didit Auth v2 callback against the decoded issuer (<issuer>/token/)
 async function exchangeDiditAuthCode({ code, state }) {
   const entry = pkceStore.get(state);
   const cfg = await getKycConfig();
   const authAppId = entry?.authAppId || cfg.authAppId || DEFAULT_DIDIT_AUTH_APP_ID;
   const redirectUri = entry?.redirectUri || `${SITE_URL}/api/auth/kyc/callback`;
   const codeVerifier = entry?.codeVerifier || '';
+  const issuer = cfg.issuerUrl || decodeIssuerFromPublishableKey(DEFAULT_DIDIT_PUBLISHABLE_KEY);
 
   const tokenEndpoints = [
+    ...(issuer ? [`${issuer}/token/`, `${issuer}/oauth/token/`] : []),
     `${DIDIT_AUTH_BASE}/${encodeURIComponent(authAppId)}/token/`,
-    `${DIDIT_AUTH_BASE}/${encodeURIComponent(authAppId)}/exchange/`,
   ];
 
   let tokenData = null;
@@ -249,9 +275,22 @@ async function exchangeDiditAuthCode({ code, state }) {
 
   if (entry) pkceStore.delete(state);
 
+  // Fetch /userinfo if access_token was returned and issuer is known
+  let userInfo = null;
+  if (tokenData?.access_token && issuer) {
+    try {
+      const uRes = await fetch(`${issuer}/userinfo/`, {
+        headers: { Authorization: `Bearer ${tokenData.access_token}`, Accept: 'application/json' },
+      });
+      if (uRes.ok) userInfo = await uRes.json().catch(() => null);
+    } catch {}
+  }
+
   const jwtClaims = decodeJwtPayload(tokenData?.id_token || tokenData?.access_token || '');
   const identityId = String(
-    tokenData?.identity_id ||
+    userInfo?.identity_id ||
+      userInfo?.sub ||
+      tokenData?.identity_id ||
       tokenData?.user?.identity_id ||
       tokenData?.user?.id ||
       jwtClaims?.sub ||
@@ -259,10 +298,12 @@ async function exchangeDiditAuthCode({ code, state }) {
       `didit_${code.slice(0, 16)}`
   ).trim();
   const email = String(
-    tokenData?.email || tokenData?.user?.email || jwtClaims?.email || ''
+    userInfo?.email || tokenData?.email || tokenData?.user?.email || jwtClaims?.email || ''
   ).trim();
   const displayName = String(
-    tokenData?.display_name ||
+    userInfo?.display_name ||
+      userInfo?.name ||
+      tokenData?.display_name ||
       tokenData?.user?.display_name ||
       tokenData?.user?.name ||
       jwtClaims?.name ||
