@@ -1,5 +1,5 @@
 const crypto = require('crypto');
-const { run, all } = require('../db/postgres');
+const { run, get, all } = require('../db/postgres');
 
 const ID_SECRET = process.env.JWT_SECRET || 'blink_id_verify_secret_2026';
 const DIDIT_BASE_URL = 'https://verification.didit.me';
@@ -127,8 +127,102 @@ async function createDiditSession({ vendorData = '', callbackBaseUrl = SITE_URL 
   };
 }
 
-// Query Didit v3 Session Decision
+// Store Didit Identity / KYC Webhook or Callback record
+async function recordDiditPayload(payload = {}) {
+  const sessionId = String(payload.session_id || payload.verificationSessionId || payload.identity_id || '').trim();
+  if (!sessionId) return null;
+
+  const identityId = String(payload.identity_id || '').trim();
+  const email = String(payload.email || '').trim();
+  const displayName = String(
+    payload.display_name ||
+      payload.decision?.id_verification?.full_name ||
+      payload.id_verification?.full_name ||
+      ''
+  ).trim();
+  const method = String(payload.method || 'didit').trim();
+  const rawStatus = String(payload.status || (identityId ? 'Approved' : 'In Progress')).trim();
+  const docType = String(
+    payload.decision?.id_verification?.document_type ||
+      payload.id_verification?.document_type ||
+      (identityId ? `Didit (${method})` : 'Didit Verified ID')
+  ).trim();
+  const maskedId = maskDocNumber(
+    payload.decision?.id_verification?.document_number ||
+      payload.id_verification?.document_number ||
+      identityId ||
+      sessionId
+  );
+  const signedInAt = payload.signed_in_at || new Date().toISOString();
+
+  await run(
+    `INSERT INTO kyc_sessions (session_id, identity_id, email, display_name, method, status, doc_type, masked_id, signed_in_at, raw_payload)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+     ON CONFLICT (session_id) DO UPDATE SET
+       identity_id = EXCLUDED.identity_id,
+       email = EXCLUDED.email,
+       display_name = EXCLUDED.display_name,
+       method = EXCLUDED.method,
+       status = EXCLUDED.status,
+       doc_type = EXCLUDED.doc_type,
+       masked_id = EXCLUDED.masked_id,
+       signed_in_at = EXCLUDED.signed_in_at,
+       raw_payload = EXCLUDED.raw_payload`,
+    [sessionId, identityId, email, displayName, method, rawStatus, docType, maskedId, signedInAt, JSON.stringify(payload).slice(0, 4000)]
+  );
+
+  const isApproved = rawStatus.toLowerCase() === 'approved' || Boolean(identityId);
+  const idVerificationToken = isApproved
+    ? signIdVerificationToken({
+        provider: 'didit',
+        sessionId,
+        identityId,
+        email,
+        displayName,
+        docType,
+        maskedId,
+      })
+    : null;
+
+  return {
+    verified: isApproved,
+    sessionId,
+    identityId,
+    email,
+    extractedName: displayName,
+    docType,
+    maskedId,
+    status: rawStatus,
+    idVerificationToken,
+  };
+}
+
+// Query Didit v3 Session Decision (checks local webhook/callback cache first, then live Didit API)
 async function getDiditSessionStatus(sessionId) {
+  // 1. Check persisted Didit webhook/callback record first
+  const stored = await get(`SELECT * FROM kyc_sessions WHERE session_id = ? OR identity_id = ?`, [sessionId, sessionId]).catch(() => null);
+  if (stored && (String(stored.status || '').toLowerCase() === 'approved' || stored.identity_id)) {
+    const idVerificationToken = signIdVerificationToken({
+      provider: 'didit',
+      sessionId: stored.session_id,
+      identityId: stored.identity_id || '',
+      email: stored.email || '',
+      displayName: stored.display_name || '',
+      docType: stored.doc_type || 'Didit Verified',
+      maskedId: stored.masked_id || 'VERIFIED',
+    });
+    return {
+      verified: true,
+      status: stored.status || 'Approved',
+      identityId: stored.identity_id || '',
+      email: stored.email || '',
+      extractedName: stored.display_name || '',
+      docType: stored.doc_type || 'Didit Verified',
+      maskedId: stored.masked_id || 'VERIFIED',
+      idVerificationToken,
+    };
+  }
+
   const cfg = await getKycConfig();
   if (!cfg.configured) {
     throw new Error('Didit KYC API yapılandırılmamış.');
@@ -161,11 +255,19 @@ async function getDiditSessionStatus(sessionId) {
   const maskedId = maskDocNumber(idv.document_number || idv.personal_number || '');
 
   if (isApproved) {
+    await recordDiditPayload({
+      session_id: sessionId,
+      status: rawStatus,
+      display_name: fullName,
+      id_verification: idv,
+    }).catch(() => {});
+
     const idVerificationToken = signIdVerificationToken({
       provider: 'didit',
       sessionId,
       docType,
       maskedId,
+      displayName: fullName,
     });
     return {
       verified: true,
@@ -190,6 +292,7 @@ module.exports = {
   saveKycConfig,
   createDiditSession,
   getDiditSessionStatus,
+  recordDiditPayload,
   signIdVerificationToken,
   verifyIdVerificationToken,
 };

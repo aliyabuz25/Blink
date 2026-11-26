@@ -12,6 +12,7 @@ const {
   getKycConfig,
   createDiditSession,
   getDiditSessionStatus,
+  recordDiditPayload,
   verifyIdVerificationToken,
 } = require('../services/idVerification');
 
@@ -335,9 +336,46 @@ router.get('/auth/kyc/status/:sessionId', async (req, res) => {
   }
 });
 
-router.get('/auth/kyc/callback', (req, res) => {
+// Didit Identity & Verification Webhook Receiver (accepts { identity_id, email, display_name, method, session_id, signed_in_at } & v3 decisions)
+router.post('/auth/kyc/webhook', async (req, res) => {
+  try {
+    const saved = await recordDiditPayload(req.body || {});
+    if (!saved) {
+      return res.status(400).json({ error: 'Missing session_id or identity_id in payload' });
+    }
+    res.json({ success: true, ...saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/auth/kyc/callback', async (req, res) => {
+  try {
+    const saved = await recordDiditPayload(req.body || {});
+    if (!saved) {
+      return res.status(400).json({ error: 'Missing session_id or identity_id' });
+    }
+    res.json({ success: true, ...saved });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/auth/kyc/callback', async (req, res) => {
   const sessionId = String(req.query.verificationSessionId || req.query.session_id || '').replace(/[^a-zA-Z0-9_-]/g, '');
+  const identityId = String(req.query.identity_id || '').replace(/[^a-zA-Z0-9_-]/g, '');
   const status = String(req.query.status || '').replace(/[^a-zA-Z0-9 _-]/g, '');
+  if (sessionId || identityId) {
+    await recordDiditPayload({
+      session_id: sessionId || identityId,
+      identity_id: identityId,
+      email: req.query.email || '',
+      display_name: req.query.display_name || '',
+      method: req.query.method || 'didit',
+      status: status || (identityId ? 'Approved' : 'In Progress'),
+      signed_in_at: req.query.signed_in_at || new Date().toISOString(),
+    }).catch(() => {});
+  }
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!doctype html>
 <html lang="tr">
@@ -352,7 +390,7 @@ router.get('/auth/kyc/callback', (req, res) => {
   <script>
     try {
       if (window.opener) {
-        window.opener.postMessage({ type: 'bynk:kyc-complete', sessionId: '${sessionId}', status: '${status}' }, '*');
+        window.opener.postMessage({ type: 'bynk:kyc-complete', sessionId: '${sessionId || identityId}', identityId: '${identityId}', status: '${status}' }, '*');
       }
     } catch (e) {}
     setTimeout(function() { try { window.close(); } catch (e) {} }, 900);
@@ -427,8 +465,20 @@ router.post('/auth/register', async (req, res) => {
         });
       }
       await run(
-        `INSERT INTO users (id, username, name, avatar, phone, invitation_id, wechat_id, is_online, is_pro, id_verified, id_doc_type) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?)`,
-        [userId, username, name, finalAvatar, normalizedPhone || null, invitationId, blinkId, verifiedIdPayload ? 1 : 0, verifiedIdPayload?.docType || '']
+        `INSERT INTO users (id, username, name, avatar, phone, invitation_id, wechat_id, is_online, is_pro, id_verified, id_doc_type, didit_identity_id, email) VALUES (?, ?, ?, ?, ?, ?, ?, 1, 0, ?, ?, ?, ?)`,
+        [
+          userId,
+          username,
+          name,
+          finalAvatar,
+          normalizedPhone || null,
+          invitationId,
+          blinkId,
+          verifiedIdPayload ? 1 : 0,
+          verifiedIdPayload?.docType || '',
+          verifiedIdPayload?.identityId || '',
+          verifiedIdPayload?.email || '',
+        ]
       );
       user = await get(`SELECT * FROM users WHERE id = ?`, [userId]);
 

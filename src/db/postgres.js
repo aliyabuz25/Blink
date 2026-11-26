@@ -184,6 +184,24 @@ async function initDatabase() {
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until TIMESTAMP;`);
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS id_verified INTEGER DEFAULT 0;`);
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS id_doc_type VARCHAR(64) DEFAULT '';`);
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS didit_identity_id VARCHAR(255) DEFAULT '';`);
+  await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(255) DEFAULT '';`);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS kyc_sessions (
+      session_id VARCHAR(255) PRIMARY KEY,
+      identity_id VARCHAR(255) DEFAULT '',
+      email VARCHAR(255) DEFAULT '',
+      display_name VARCHAR(255) DEFAULT '',
+      method VARCHAR(64) DEFAULT '',
+      status VARCHAR(64) DEFAULT 'Approved',
+      doc_type VARCHAR(128) DEFAULT 'Didit Verified',
+      masked_id VARCHAR(128) DEFAULT '',
+      signed_in_at TIMESTAMP,
+      raw_payload TEXT DEFAULT '',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
   await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'image';`);
   await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS is_story INTEGER DEFAULT 0;`);
   await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS channel_type VARCHAR(24) DEFAULT 'dm';`);
