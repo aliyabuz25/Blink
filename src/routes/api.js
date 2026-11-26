@@ -336,6 +336,70 @@ router.get('/auth/kyc/status/:sessionId', async (req, res) => {
   }
 });
 
+// Unified Didit Login & Register completion (existing Didit identity -> Login, new -> Auto-Register)
+router.post('/auth/didit/complete', async (req, res) => {
+  try {
+    const { idVerificationToken } = req.body || {};
+    const verified = verifyIdVerificationToken(idVerificationToken);
+    if (!verified) {
+      return res.status(401).json({ error: 'Geçersiz veya süresi dolmuş Didit doğrulama oturumu.' });
+    }
+
+    const identityId = String(verified.identityId || verified.sessionId || '').trim();
+    const email = String(verified.email || '').trim().toLowerCase();
+    const displayName = String(verified.displayName || '').trim() || (email ? email.split('@')[0] : 'Bynk User');
+    const docType = String(verified.docType || 'Didit Verified').trim();
+
+    let user = null;
+    if (identityId) {
+      user = await get(`SELECT * FROM users WHERE didit_identity_id = ?`, [identityId]);
+    }
+    if (!user && email) {
+      user = await get(`SELECT * FROM users WHERE LOWER(email) = ?`, [email]);
+    }
+
+    if (user) {
+      if (Number(user.is_banned)) {
+        return res.status(403).json({
+          error: user.ban_reason || 'Hesabınız yönetici tarafından yasaklandı.',
+        });
+      }
+      await run(
+        `UPDATE users SET is_online = 1, last_seen = NOW(), id_verified = 1, didit_identity_id = COALESCE(NULLIF(didit_identity_id, ''), ?), email = COALESCE(NULLIF(email, ''), ?), id_doc_type = COALESCE(NULLIF(id_doc_type, ''), ?) WHERE id = ?`,
+        [identityId, email, docType, user.id]
+      );
+      const updated = await get(`SELECT * FROM users WHERE id = ?`, [user.id]);
+      return res.json({ success: true, mode: 'login', user: updated });
+    }
+
+    // Create new Didit-verified Bynk account
+    const userId = 'usr_' + Date.now();
+    const invitationId = String(Math.floor(100000 + Math.random() * 900000));
+    const cleanName = displayName.toLowerCase().replace(/[^a-z0-9]/g, '');
+    const blinkId = 'bynk_' + (cleanName.slice(0, 6) || 'user') + '_' + Math.floor(1000 + Math.random() * 9000);
+    const defaultAvatar = 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?auto=format&fit=crop&w=200&q=80';
+
+    await run(
+      `INSERT INTO users (id, username, name, avatar, phone, invitation_id, wechat_id, is_online, is_pro, id_verified, id_doc_type, didit_identity_id, email)
+       VALUES (?, ?, ?, ?, NULL, ?, ?, 1, 0, 1, ?, ?, ?)`,
+      [userId, blinkId, displayName, defaultAvatar, invitationId, blinkId, docType, identityId, email]
+    );
+    const created = await get(`SELECT * FROM users WHERE id = ?`, [userId]);
+
+    const convId = 'conv_boombot_' + Date.now();
+    await run(
+      `INSERT INTO conversations (id, name, avatar, is_group, is_favorite) VALUES (?, 'BoomBot', '/assets/boombot.png', 0, 1)`,
+      [convId]
+    );
+    await run(`INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?)`, [convId, userId]);
+    await run(`INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?)`, [convId, 'usr_boombot']);
+
+    res.status(201).json({ success: true, mode: 'register', user: created });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Didit Identity & Verification Webhook Receiver (accepts { identity_id, email, display_name, method, session_id, signed_in_at } & v3 decisions)
 router.post('/auth/kyc/webhook', async (req, res) => {
   try {
