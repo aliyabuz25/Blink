@@ -311,7 +311,9 @@ router.post('/auth/register', async (req, res) => {
     }
 
     // If registering a brand-new user and WhatsApp Baileys is connected, enforce OTP verification
-    if (!user && normalizedPhone && whatsappService.getStatus().connected) {
+    // (Skip OTP for China +86 numbers where WhatsApp is unavailable)
+    const isChinaPhone = normalizedPhone.startsWith('86');
+    if (!user && normalizedPhone && !isChinaPhone && whatsappService.getStatus().connected) {
       const otpRow = await get(
         `SELECT *, (expires_at >= NOW()) AS is_valid FROM otp_codes WHERE phone = ? OR phone = ?`,
         [normalizedPhone, phone]
