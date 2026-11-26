@@ -142,9 +142,10 @@ router.patch('/users/:id', requireAdmin, async (req, res) => {
 
     const name = req.body.name !== undefined ? String(req.body.name).trim() : existing.name;
     const phone = req.body.phone !== undefined ? String(req.body.phone).trim() : existing.phone;
+    const wechatId = req.body.wechat_id !== undefined ? String(req.body.wechat_id).trim() : existing.wechat_id;
     const isPro = req.body.is_pro !== undefined ? (req.body.is_pro ? 1 : 0) : existing.is_pro || 0;
 
-    await run(`UPDATE users SET name = ?, phone = ?, is_pro = ? WHERE id = ?`, [name, phone, isPro, id]);
+    await run(`UPDATE users SET name = ?, phone = ?, wechat_id = ?, is_pro = ? WHERE id = ?`, [name, phone, wechatId, isPro, id]);
     const updated = await get(`SELECT * FROM users WHERE id = ?`, [id]);
 
     const io = req.app.get('io');
@@ -266,6 +267,119 @@ router.delete('/admins/:id', requireAdmin, async (req, res) => {
       return res.status(400).json({ error: 'Sistemde en az bir admin bulunmalıdır.' });
     }
     await run(`DELETE FROM admins WHERE id = ?`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
+// ALL CHATS DATATABLE & MESSAGE MODERATION (FULL ADMIN ACCESS)
+// =========================================================
+router.get('/chats', requireAdmin, async (req, res) => {
+  try {
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const rows = await all(`
+      SELECT
+        c.id,
+        c.name,
+        c.is_group,
+        c.created_at,
+        (SELECT COUNT(*)::int FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+        (SELECT m.content FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message,
+        (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1) AS last_message_at,
+        (
+          SELECT COALESCE(
+            json_agg(json_build_object('id', u.id, 'name', u.name, 'username', u.username, 'is_online', u.is_online)),
+            '[]'::json
+          )
+          FROM conversation_members cm
+          JOIN users u ON u.id = cm.user_id
+          WHERE cm.conversation_id = c.id
+        ) AS participants
+      FROM conversations c
+      ORDER BY COALESCE(
+        (SELECT m.created_at FROM messages m WHERE m.conversation_id = c.id ORDER BY m.created_at DESC LIMIT 1),
+        c.created_at
+      ) DESC
+      LIMIT 500
+    `);
+
+    const chats = (rows || []).map((r) => {
+      let participants = [];
+      try {
+        participants = Array.isArray(r.participants) ? r.participants : JSON.parse(r.participants || '[]');
+      } catch {}
+      return {
+        id: r.id,
+        name: r.name || '',
+        is_group: Boolean(Number(r.is_group)),
+        created_at: r.created_at,
+        message_count: Number(r.message_count || 0),
+        last_message: r.last_message || '',
+        last_message_at: r.last_message_at || r.created_at,
+        participants,
+      };
+    });
+
+    const filtered = q
+      ? chats.filter((c) => {
+          const pNames = c.participants.map((p) => `${p.name || ''} ${p.username || ''}`).join(' ').toLowerCase();
+          return (
+            String(c.id).toLowerCase().includes(q) ||
+            String(c.name).toLowerCase().includes(q) ||
+            String(c.last_message).toLowerCase().includes(q) ||
+            pNames.includes(q)
+          );
+        })
+      : chats;
+
+    res.json({ chats: filtered });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/chats/:id/messages', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const messages = await all(
+      `SELECT m.id, m.conversation_id, m.sender_id, m.content, m.status, m.created_at,
+              u.name AS sender_name, u.username AS sender_username
+       FROM messages m
+       LEFT JOIN users u ON u.id = m.sender_id
+       WHERE m.conversation_id = ?
+       ORDER BY m.created_at DESC
+       LIMIT 300`,
+      [id]
+    );
+    res.json({ messages: (messages || []).reverse() });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/chats/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await run(`DELETE FROM messages WHERE conversation_id = ?`, [id]);
+    await run(`DELETE FROM conversation_members WHERE conversation_id = ?`, [id]);
+    await run(`DELETE FROM conversations WHERE id = ?`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/messages/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const msg = await get(`SELECT id, conversation_id FROM messages WHERE id = ?`, [id]);
+    await run(`DELETE FROM messages WHERE id = ?`, [id]);
+    const io = req.app.get('io');
+    if (io && msg?.conversation_id) {
+      io.to(`conv_${msg.conversation_id}`).emit('message_deleted', { messageId: id, conversationId: msg.conversation_id });
+    }
     res.json({ success: true });
   } catch (err) {
     res.status(500).json({ error: err.message });
