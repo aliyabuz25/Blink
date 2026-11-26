@@ -134,6 +134,11 @@ router.post('/auth/verify-code', async (req, res) => {
         [`%${clean.slice(-10)}`]
       );
     }
+    if (existing && Number(existing.is_banned)) {
+      return res.status(403).json({
+        error: existing.ban_reason || 'Hesabınız yönetici tarafından yasaklandı.',
+      });
+    }
     res.json({
       success: true,
       isRegistered: Boolean(existing),
@@ -331,6 +336,11 @@ router.post('/auth/register', async (req, res) => {
     }
 
     if (user) {
+      if (Number(user.is_banned)) {
+        return res.status(403).json({
+          error: user.ban_reason || 'Hesabınız yönetici tarafından yasaklandı.',
+        });
+      }
       const currentBlinkId = user.wechat_id || user.username || blinkId;
       await run(`UPDATE users SET name = ?, avatar = ?, wechat_id = ?, is_online = 1, last_seen = NOW() WHERE id = ?`, [name, finalAvatar, currentBlinkId, user.id]);
       user = await get(`SELECT * FROM users WHERE id = ?`, [user.id]);
@@ -937,7 +947,11 @@ router.post('/conversations/:id/messages', async (req, res) => {
 
     const cleanContent = content.trim();
 
-    // Enforce Ban / Timeout Mute / Slow Mode
+    // Enforce Maintenance Mode, Ban, Timeout Mute & Slow Mode
+    const maintRow = await get(`SELECT value FROM admin_access_settings WHERE key = 'maintenance_mode'`);
+    if (maintRow && maintRow.value === '1') {
+      return res.status(503).json({ error: 'Sistem şu anda bakım modunda. Lütfen kısa süre sonra tekrar deneyin.' });
+    }
     const senderGuard = await get(`SELECT is_banned, ban_reason, muted_until FROM users WHERE id = ?`, [currentId]);
     if (senderGuard && Number(senderGuard.is_banned)) {
       return res.status(403).json({ error: senderGuard.ban_reason || 'Hesabınız yönetici tarafından yasaklandı.' });

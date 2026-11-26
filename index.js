@@ -17,6 +17,7 @@ const { inspectAndReport } = require('./src/services/contentModeration');
 const whatsappService = require('./src/services/whatsapp');
 
 const app = express();
+app.disable('x-powered-by');
 app.set('trust proxy', true);
 const server = http.createServer(app);
 
@@ -46,7 +47,7 @@ const isOriginAllowed = (origin) => {
 const io = new Server(server, {
   cors: {
     origin: (origin, callback) => callback(null, isOriginAllowed(origin)),
-    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
     credentials: true,
   },
   transports: ['websocket', 'polling'],
@@ -54,11 +55,19 @@ const io = new Server(server, {
 
 app.set('io', io);
 
+// Security headers for production
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  next();
+});
+
 // Express Middleware
 app.use(cors({
   origin: (origin, callback) => callback(null, isOriginAllowed(origin)),
   credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'x-user-id', 'x-admin-screen', 'x-admin-viewport']
 }));
 
@@ -109,7 +118,7 @@ app.use('/api/admin', adminApiGate, adminRouter);
 app.use('/api', apiRouter);
 
 // React (shadcn-admin) Admin Panel served from ./webapp/admin.html (protected by .htaccess gate)
-app.get(['/admin', '/admin/', '/admin.html'], adminPageGate, (req, res) => {
+app.get(['/admin', '/admin/', '/admin.html', '/admin/index.html'], adminPageGate, (req, res) => {
   const reactAdminHtml = path.resolve(__dirname, 'webapp', 'admin.html');
   if (fs.existsSync(reactAdminHtml)) {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
@@ -310,65 +319,75 @@ io.on('connection', (socket) => {
 
   // Message Send & Broadcast
   socket.on('send_message', async ({ conversationId, senderId, content }) => {
-    if (!content || !content.trim()) return;
+    try {
+      if (!content || !content.trim()) return;
 
-    const senderCheck = await get(`SELECT id, name, avatar, is_banned, ban_reason, muted_until FROM users WHERE id = ?`, [senderId]);
-    if (senderCheck && Number(senderCheck.is_banned)) {
-      socket.emit('admin_user_banned', { userId: senderId, banned: true, reason: senderCheck.ban_reason || 'Hesabınız yasaklandı.' });
-      return;
-    }
-    if (senderCheck && senderCheck.muted_until && new Date(senderCheck.muted_until).getTime() > Date.now()) {
-      socket.emit('admin_user_muted', { userId: senderId, mutedUntil: senderCheck.muted_until });
-      return;
-    }
+      const maintRow = await get(`SELECT value FROM admin_access_settings WHERE key = 'maintenance_mode'`);
+      if (maintRow && maintRow.value === '1') {
+        socket.emit('admin_server_settings', { maintenance_mode: true });
+        return;
+      }
 
-    const messageId = 'm_' + Date.now();
-    const now = new Date().toISOString();
+      const senderCheck = await get(`SELECT id, name, avatar, is_banned, ban_reason, muted_until FROM users WHERE id = ?`, [senderId]);
+      if (senderCheck && Number(senderCheck.is_banned)) {
+        socket.emit('admin_user_banned', { userId: senderId, banned: true, reason: senderCheck.ban_reason || 'Hesabınız yasaklandı.' });
+        return;
+      }
+      if (senderCheck && senderCheck.muted_until && new Date(senderCheck.muted_until).getTime() > Date.now()) {
+        socket.emit('admin_user_muted', { userId: senderId, mutedUntil: senderCheck.muted_until });
+        return;
+      }
 
-    await run(
-      `INSERT INTO messages (id, conversation_id, sender_id, content, status, created_at) VALUES (?, ?, ?, ?, 'delivered', ?)`,
-      [messageId, conversationId, senderId, content.trim(), now]
-    );
+      const messageId = 'm_' + Date.now();
+      const now = new Date().toISOString();
 
-    const sender = senderCheck;
+      await run(
+        `INSERT INTO messages (id, conversation_id, sender_id, content, status, created_at) VALUES (?, ?, ?, ?, 'delivered', ?)`,
+        [messageId, conversationId, senderId, content.trim(), now]
+      );
 
-    const fullMessage = {
-      id: messageId,
-      conversation_id: conversationId,
-      sender_id: senderId,
-      sender_name: sender ? sender.name : 'Blink User',
-      sender_avatar: sender ? sender.avatar : '',
-      content: content.trim(),
-      created_at: now
-    };
+      const sender = senderCheck;
 
-    io.to(`conv_${conversationId}`).emit('new_message', fullMessage);
-    io.emit('new_message', fullMessage);
-    io.emit('new_message_notification', { conversationId, message: fullMessage });
+      const fullMessage = {
+        id: messageId,
+        conversation_id: conversationId,
+        sender_id: senderId,
+        sender_name: sender ? sender.name : 'Blink User',
+        sender_avatar: sender ? sender.avatar : '',
+        content: content.trim(),
+        created_at: now
+      };
 
-    await redisModule.cacheMessage(conversationId, fullMessage);
-    await redisModule.publishEvent('messages', { conversationId, message: fullMessage });
+      io.to(`conv_${conversationId}`).emit('new_message', fullMessage);
+      io.emit('new_message', fullMessage);
+      io.emit('new_message_notification', { conversationId, message: fullMessage });
 
-    // Non-blocking +18 / suspicious TR & EN content scan
-    inspectAndReport({
-      sourceType: 'message',
-      sourceId: messageId,
-      conversationId,
-      userId: senderId,
-      userName: sender ? sender.name : '',
-      content: content.trim(),
-      createdAt: now,
-      io,
-    }).catch(() => {});
+      await redisModule.cacheMessage(conversationId, fullMessage);
+      await redisModule.publishEvent('messages', { conversationId, message: fullMessage });
 
-    // Auto-reply STRICTLY for BoomBot conversation (never in human-to-human chats)
-    if (conversationId && conversationId.includes('boombot')) {
-      socket.to(`conv_${conversationId}`).emit('user_typing', {
+      // Non-blocking +18 / suspicious TR & EN content scan
+      inspectAndReport({
+        sourceType: 'message',
+        sourceId: messageId,
         conversationId,
-        userId: 'usr_boombot',
-        userName: 'BoomBot'
-      });
-      triggerBoomBotReply(io, conversationId, content.trim());
+        userId: senderId,
+        userName: sender ? sender.name : '',
+        content: content.trim(),
+        createdAt: now,
+        io,
+      }).catch(() => {});
+
+      // Auto-reply STRICTLY for BoomBot conversation (never in human-to-human chats)
+      if (conversationId && conversationId.includes('boombot')) {
+        socket.to(`conv_${conversationId}`).emit('user_typing', {
+          conversationId,
+          userId: 'usr_boombot',
+          userName: 'BoomBot'
+        });
+        triggerBoomBotReply(io, conversationId, content.trim());
+      }
+    } catch (err) {
+      console.error('⚠️ [Socket send_message] error:', err.message);
     }
   });
 
@@ -487,39 +506,59 @@ io.on('connection', (socket) => {
 
   // Disconnection cleanup (only mark offline when user's last active socket disconnects)
   socket.on('disconnect', async () => {
-    if (socket.userId) {
-      const uid = socket.userId;
-      const set = userSockets.get(uid);
-      if (set) {
-        set.delete(socket.id);
-        if (set.size === 0) userSockets.delete(uid);
+    try {
+      if (socket.userId) {
+        const uid = socket.userId;
+        const set = userSockets.get(uid);
+        if (set) {
+          set.delete(socket.id);
+          if (set.size === 0) userSockets.delete(uid);
+        }
+        if (!userSockets.has(uid)) {
+          await redisModule.setUserOffline(uid);
+          const now = new Date().toISOString();
+          await run(`UPDATE users SET is_online = 0, last_seen = ? WHERE id = ?`, [now, uid]);
+          io.emit('user_status_changed', {
+            userId: uid,
+            isOnline: false,
+            statusMode: 'offline',
+            lastSeen: now,
+          });
+        }
       }
-      if (!userSockets.has(uid)) {
-        await redisModule.setUserOffline(uid);
-        const now = new Date().toISOString();
-        await run(`UPDATE users SET is_online = 0, last_seen = ? WHERE id = ?`, [now, uid]);
-        io.emit('user_status_changed', {
-          userId: uid,
-          isOnline: false,
-          statusMode: 'offline',
-          lastSeen: now,
+      if (socket.activeConvId && roomViewers.has(socket.activeConvId)) {
+        const convId = socket.activeConvId;
+        const viewersMap = roomViewers.get(convId);
+        const userInfo = viewersMap.get(socket.id);
+        viewersMap.delete(socket.id);
+        if (viewersMap.size === 0) roomViewers.delete(convId);
+
+        socket.to(`conv_${convId}`).emit('peer_viewing_chat', {
+          conversationId: convId,
+          userId: socket.userId || (userInfo && userInfo.userId),
+          isViewing: false
         });
       }
-    }
-    if (socket.activeConvId && roomViewers.has(socket.activeConvId)) {
-      const convId = socket.activeConvId;
-      const viewersMap = roomViewers.get(convId);
-      const userInfo = viewersMap.get(socket.id);
-      viewersMap.delete(socket.id);
-      if (viewersMap.size === 0) roomViewers.delete(convId);
-
-      socket.to(`conv_${convId}`).emit('peer_viewing_chat', {
-        conversationId: convId,
-        userId: socket.userId || (userInfo && userInfo.userId),
-        isViewing: false
-      });
+    } catch (err) {
+      console.error('⚠️ [Socket disconnect] cleanup error:', err.message);
     }
   });
+});
+
+// Global Express JSON Error Handler (prevents HTML stack traces in production)
+app.use((err, req, res, next) => {
+  console.error('❌ [Express Error]', err?.message || err);
+  if (res.headersSent) return next(err);
+  const status = err?.status || err?.statusCode || 500;
+  res.status(status).json({ error: err?.message || 'Internal server error' });
+});
+
+// Process-level resilience guards (prevents unexpected container crashes in Node 22)
+process.on('unhandledRejection', (reason) => {
+  console.error('⚠️ [UnhandledRejection]', reason?.message || reason);
+});
+process.on('uncaughtException', (err) => {
+  console.error('⚠️ [UncaughtException]', err?.message || err);
 });
 
 // Server Initialization
