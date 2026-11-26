@@ -7,6 +7,7 @@ const { run, get, all } = require('../db/sqlite');
 const redisModule = require('../db/redis');
 const { triggerBoomBotReply } = require('../services/boombot');
 const whatsappService = require('../services/whatsapp');
+const { inspectAndReport } = require('../services/contentModeration');
 
 // Configure Multer for avatar and file uploads
 // In production or Electron packaged app, use a user-writable application data directory
@@ -980,6 +981,16 @@ router.post('/conversations/:id/messages', async (req, res) => {
 
     // Direct Socket.IO emission: emit to room AND broadcast to all connected clients
     const io = req.app.get('io');
+    inspectAndReport({
+      sourceType: 'message',
+      sourceId: messageId,
+      conversationId,
+      userId: currentId,
+      userName: sender ? sender.name : '',
+      content: cleanContent,
+      createdAt: now,
+      io,
+    }).catch(() => {});
     if (io) {
       io.to(`conv_${conversationId}`).emit('new_message', fullMessage);
       io.emit('new_message', fullMessage);
@@ -1159,6 +1170,15 @@ router.post('/stories', async (req, res) => {
     );
 
     const newStory = await get(`SELECT * FROM stories WHERE id = ?`, [storyId]);
+    inspectAndReport({
+      sourceType: 'story',
+      sourceId: storyId,
+      conversationId: '',
+      userId: currentId,
+      userName: user ? user.name : '',
+      content: String(content || '').trim(),
+      io: req.app.get('io'),
+    }).catch(() => {});
     res.status(201).json({ story: newStory });
   } catch (err) {
     res.status(500).json({ error: err.message });

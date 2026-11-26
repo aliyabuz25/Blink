@@ -11,6 +11,12 @@ const {
   loadAccessPolicy,
   generateHtaccessSnippet,
 } = require('../services/adminAccess');
+const {
+  BUILTIN_RULES,
+  invalidateKeywordCache,
+  getCustomKeywords,
+  scanExistingContent,
+} = require('../services/contentModeration');
 
 const ADMIN_SECRET = process.env.JWT_SECRET || 'blink_admin_secret_key_2026';
 
@@ -91,6 +97,7 @@ router.get('/stats', requireAdmin, async (req, res) => {
     const dailyMessagesRow = await get(`SELECT COUNT(*)::int AS cnt FROM messages WHERE created_at >= NOW() - INTERVAL '1 day'`);
     const weeklyMessagesRow = await get(`SELECT COUNT(*)::int AS cnt FROM messages WHERE created_at >= NOW() - INTERVAL '7 days'`);
     const totalConvsRow = await get(`SELECT COUNT(*)::int AS cnt FROM conversations`);
+    const openAlertsRow = await get(`SELECT COUNT(*)::int AS cnt FROM moderation_alerts WHERE status = 'open'`);
 
     const recentUsers = await all(
       `SELECT id, name, username, avatar, phone, is_online, is_pro, created_at, last_seen FROM users WHERE id != 'usr_boombot' ORDER BY created_at DESC LIMIT 6`
@@ -106,6 +113,7 @@ router.get('/stats', requireAdmin, async (req, res) => {
       dailyMessages: dailyMessagesRow?.cnt || 0,
       weeklyMessages: weeklyMessagesRow?.cnt || 0,
       totalConversations: totalConvsRow?.cnt || 0,
+      openModerationAlerts: openAlertsRow?.cnt || 0,
       recentUsers,
       whatsapp: whatsappService.getStatus(),
     });
@@ -541,6 +549,158 @@ router.delete('/access/hosts/:id', requireAdmin, async (req, res) => {
       hosts: updated.hosts,
       htaccess: generateHtaccessSnippet(updated.hosts, updated.settings),
     });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
+// +18 / SUSPICIOUS CONTENT MODERATION ALERTS (TR & EN)
+// =========================================================
+router.get('/moderation/alerts', requireAdmin, async (req, res) => {
+  try {
+    const status = String(req.query.status || 'open').trim().toLowerCase();
+    const q = String(req.query.q || '').trim().toLowerCase();
+
+    const rows =
+      status === 'all'
+        ? await all(`SELECT * FROM moderation_alerts ORDER BY created_at DESC LIMIT 500`)
+        : await all(`SELECT * FROM moderation_alerts WHERE status = ? ORDER BY created_at DESC LIMIT 500`, [status]);
+
+    const openRow = await get(`SELECT COUNT(*)::int AS cnt FROM moderation_alerts WHERE status = 'open'`);
+
+    const alerts = (rows || []).map((r) => {
+      let matchedTerms = [];
+      try {
+        matchedTerms = JSON.parse(r.matched_terms || '[]');
+      } catch {}
+      return {
+        ...r,
+        matched_terms: Array.isArray(matchedTerms) ? matchedTerms : [],
+      };
+    });
+
+    const filtered = q
+      ? alerts.filter(
+          (a) =>
+            String(a.content || '').toLowerCase().includes(q) ||
+            String(a.user_name || '').toLowerCase().includes(q) ||
+            String(a.username || '').toLowerCase().includes(q) ||
+            a.matched_terms.join(' ').toLowerCase().includes(q)
+        )
+      : alerts;
+
+    res.json({
+      alerts: filtered,
+      openCount: openRow?.cnt || 0,
+      builtinRuleCount: BUILTIN_RULES.length,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/moderation/scan', requireAdmin, async (req, res) => {
+  try {
+    const result = await scanExistingContent();
+    const openRow = await get(`SELECT COUNT(*)::int AS cnt FROM moderation_alerts WHERE status = 'open'`);
+    res.json({
+      success: true,
+      ...result,
+      openCount: openRow?.cnt || 0,
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/moderation/alerts/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const status = String(req.body?.status || '').trim().toLowerCase();
+    if (!['open', 'reviewed', 'dismissed', 'deleted'].includes(status)) {
+      return res.status(400).json({ error: 'Geçersiz durum.' });
+    }
+    await run(`UPDATE moderation_alerts SET status = ? WHERE id = ?`, [status, id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/moderation/alerts/:id/content', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const alert = await get(`SELECT * FROM moderation_alerts WHERE id = ?`, [id]);
+    if (!alert) return res.status(404).json({ error: 'Uyarı bulunamadı.' });
+
+    if (alert.source_type === 'message') {
+      await run(`DELETE FROM messages WHERE id = ?`, [alert.source_id]);
+      const io = req.app.get('io');
+      if (io && alert.conversation_id) {
+        io.to(`conv_${alert.conversation_id}`).emit('message_deleted', {
+          messageId: alert.source_id,
+          conversationId: alert.conversation_id,
+        });
+      }
+    } else if (alert.source_type === 'story') {
+      await run(`DELETE FROM stories WHERE id = ?`, [alert.source_id]);
+    }
+
+    await run(`UPDATE moderation_alerts SET status = 'deleted' WHERE id = ?`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/moderation/alerts/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await run(`DELETE FROM moderation_alerts WHERE id = ?`, [id]);
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.get('/moderation/keywords', requireAdmin, async (req, res) => {
+  try {
+    const keywords = await getCustomKeywords();
+    res.json({ keywords, builtinRuleCount: BUILTIN_RULES.length });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/moderation/keywords', requireAdmin, async (req, res) => {
+  try {
+    const term = String(req.body?.term || '').trim().toLowerCase();
+    const lang = ['tr', 'en', 'custom'].includes(req.body?.lang) ? req.body.lang : 'custom';
+    const severity = req.body?.severity === 'medium' ? 'medium' : 'high';
+    if (!term || term.length < 2) {
+      return res.status(400).json({ error: 'Kelime en az 2 karakter olmalıdır.' });
+    }
+    const id = 'kw_' + Date.now();
+    await run(
+      `INSERT INTO moderation_keywords (id, term, lang, severity) VALUES (?, ?, ?, ?) ON CONFLICT (term) DO NOTHING`,
+      [id, term, lang, severity]
+    );
+    invalidateKeywordCache();
+    const keywords = await getCustomKeywords();
+    res.status(201).json({ success: true, keywords });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/moderation/keywords/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    await run(`DELETE FROM moderation_keywords WHERE id = ?`, [id]);
+    invalidateKeywordCache();
+    const keywords = await getCustomKeywords();
+    res.json({ success: true, keywords });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

@@ -13,6 +13,7 @@ const { triggerBoomBotReply } = require('./src/services/boombot');
 const apiRouter = require('./src/routes/api');
 const adminRouter = require('./src/routes/admin');
 const { adminPageGate, adminApiGate } = require('./src/services/adminAccess');
+const { inspectAndReport } = require('./src/services/contentModeration');
 const whatsappService = require('./src/services/whatsapp');
 
 const app = express();
@@ -337,6 +338,18 @@ io.on('connection', (socket) => {
 
     await redisModule.cacheMessage(conversationId, fullMessage);
     await redisModule.publishEvent('messages', { conversationId, message: fullMessage });
+
+    // Non-blocking +18 / suspicious TR & EN content scan
+    inspectAndReport({
+      sourceType: 'message',
+      sourceId: messageId,
+      conversationId,
+      userId: senderId,
+      userName: sender ? sender.name : '',
+      content: content.trim(),
+      createdAt: now,
+      io,
+    }).catch(() => {});
 
     // Auto-reply STRICTLY for BoomBot conversation (never in human-to-human chats)
     if (conversationId && conversationId.includes('boombot')) {

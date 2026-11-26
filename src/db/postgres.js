@@ -261,6 +261,35 @@ async function initDatabase() {
     console.log('🔒 [Admin .htaccess] Seeded primary allowed host (212.154.66.176 / 1710x1107)');
   }
 
+  // Content Safety & +18 Moderation Alerts tables
+  await run(`
+    CREATE TABLE IF NOT EXISTS moderation_alerts (
+      id VARCHAR(255) PRIMARY KEY,
+      source_type VARCHAR(32) NOT NULL,
+      source_id VARCHAR(255) NOT NULL,
+      conversation_id VARCHAR(255) DEFAULT '',
+      user_id VARCHAR(255) NOT NULL,
+      user_name VARCHAR(255) DEFAULT '',
+      username VARCHAR(255) DEFAULT '',
+      content TEXT NOT NULL,
+      matched_terms TEXT NOT NULL,
+      category VARCHAR(64) DEFAULT 'adult',
+      severity VARCHAR(16) DEFAULT 'high',
+      status VARCHAR(24) DEFAULT 'open',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS moderation_keywords (
+      id VARCHAR(255) PRIMARY KEY,
+      term VARCHAR(255) UNIQUE NOT NULL,
+      lang VARCHAR(16) DEFAULT 'custom',
+      severity VARCHAR(16) DEFAULT 'high',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
   const user = await get(`SELECT id FROM users WHERE id = 'usr_boombot';`);
   if (!user) {
     await seedRealData();
