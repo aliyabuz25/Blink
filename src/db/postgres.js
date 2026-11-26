@@ -184,6 +184,13 @@ async function initDatabase() {
   await run(`ALTER TABLE users ADD COLUMN IF NOT EXISTS muted_until TIMESTAMP;`);
   await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS media_type VARCHAR(20) DEFAULT 'image';`);
   await run(`ALTER TABLE stories ADD COLUMN IF NOT EXISTS is_story INTEGER DEFAULT 0;`);
+  await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS channel_type VARCHAR(24) DEFAULT 'dm';`);
+  await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS topic TEXT DEFAULT '';`);
+  await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS is_public INTEGER DEFAULT 0;`);
+  await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS created_by VARCHAR(255) DEFAULT '';`);
+  await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned_message_id VARCHAR(255) DEFAULT '';`);
+  await run(`ALTER TABLE conversations ADD COLUMN IF NOT EXISTS pinned_message_text TEXT DEFAULT '';`);
+  await run(`ALTER TABLE messages ADD COLUMN IF NOT EXISTS reactions TEXT DEFAULT '{}';`);
 
   await run(`
     CREATE TABLE IF NOT EXISTS follows (
@@ -307,6 +314,22 @@ async function initDatabase() {
   const user = await get(`SELECT id FROM users WHERE id = 'usr_boombot';`);
   if (!user) {
     await seedRealData();
+  }
+
+  // Seed default Discord-style public chat channels if none exist
+  const chCount = await get(`SELECT COUNT(*)::int AS cnt FROM conversations WHERE channel_type = 'channel'`);
+  if (!chCount || Number(chCount.cnt) === 0) {
+    await run(
+      `INSERT OR IGNORE INTO conversations (id, name, avatar, is_group, channel_type, topic, is_public, created_by)
+       VALUES (?, ?, ?, 1, 'channel', ?, 1, 'system')`,
+      ['ch_general', 'genel', '', 'Bynk topluluk sohbet kanalı']
+    );
+    await run(
+      `INSERT OR IGNORE INTO conversations (id, name, avatar, is_group, channel_type, topic, is_public, created_by)
+       VALUES (?, ?, ?, 1, 'channel', ?, 1, 'system')`,
+      ['ch_gaming', 'oyun', '', 'Oyun, sesli sohbet ve takım bulma kanalı']
+    );
+    console.log('💬 [Channels] Seeded default public channels (#genel, #oyun)');
   }
 }
 

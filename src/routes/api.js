@@ -822,6 +822,12 @@ router.get('/conversations', async (req, res) => {
           ELSE NULL
         END as wechat_id,
         c.is_group, c.is_favorite,
+        COALESCE(c.channel_type, CASE WHEN c.is_group = 1 THEN 'group' ELSE 'dm' END) as channel_type,
+        COALESCE(c.topic, '') as topic,
+        COALESCE(c.is_public, 0) as is_public,
+        COALESCE(c.pinned_message_id, '') as pinned_message_id,
+        COALESCE(c.pinned_message_text, '') as pinned_message_text,
+        (SELECT COUNT(*)::int FROM conversation_members cm2 WHERE cm2.conversation_id = c.id) as member_count,
         (
           SELECT json_build_object('content', m.content, 'created_at', m.created_at, 'sender_id', m.sender_id, 'status', m.status)::text
           FROM messages m
@@ -836,7 +842,7 @@ router.get('/conversations', async (req, res) => {
         ) as unread_count
       FROM conversations c
       JOIN conversation_members cm ON c.id = cm.conversation_id
-      LEFT JOIN conversation_members other_cm ON c.id = other_cm.conversation_id AND other_cm.user_id != ?
+      LEFT JOIN conversation_members other_cm ON c.id = other_cm.conversation_id AND other_cm.user_id != ? AND c.is_group = 0
       LEFT JOIN users other_u ON other_cm.user_id = other_u.id
       WHERE cm.user_id = ? AND c.id NOT LIKE '%boombot%'
       ORDER BY c.updated_at DESC
@@ -856,8 +862,17 @@ router.get('/conversations', async (req, res) => {
         name: conv.name,
         avatar: conv.avatar,
         is_group: Boolean(conv.is_group),
+        channel_type: conv.channel_type || (conv.is_group ? 'group' : 'dm'),
+        topic: conv.topic || '',
+        is_public: Boolean(conv.is_public),
+        pinned_message_id: conv.pinned_message_id || '',
+        pinned_message_text: conv.pinned_message_text || '',
+        member_count: Number(conv.member_count || 0),
         is_favorite: Boolean(conv.is_favorite),
         is_online: Boolean(conv.is_online),
+        status_mode: conv.status_mode || (conv.is_online ? 'online' : 'offline'),
+        is_pro: Boolean(Number(conv.is_pro)),
+        wechat_id: conv.wechat_id || null,
         last_seen: conv.last_seen || null,
         unread_count: conv.unread_count || 0,
         last_message: lastMessage
@@ -885,6 +900,197 @@ router.post('/conversations', async (req, res) => {
     await run(`INSERT INTO conversation_members (conversation_id, user_id) VALUES (?, ?)`, [convId, currentId]);
 
     res.status(201).json({ conversation: { id: convId, name: name.trim(), avatar: defaultAvatar, unread_count: 0 } });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
+// DISCORD + WECHAT CHANNELS, REACTIONS & MESSAGE PINNING
+// =========================================================
+router.get('/channels', async (req, res) => {
+  try {
+    const currentId = getCurrentUserId(req);
+    const rows = await all(
+      `
+      SELECT
+        c.id,
+        c.name,
+        COALESCE(c.topic, '') AS topic,
+        COALESCE(c.is_public, 0) AS is_public,
+        COALESCE(c.created_by, '') AS created_by,
+        COALESCE(c.pinned_message_id, '') AS pinned_message_id,
+        COALESCE(c.pinned_message_text, '') AS pinned_message_text,
+        c.created_at,
+        c.updated_at,
+        (SELECT COUNT(*)::int FROM conversation_members cm WHERE cm.conversation_id = c.id) AS member_count,
+        (SELECT COUNT(*)::int FROM messages m WHERE m.conversation_id = c.id) AS message_count,
+        EXISTS(SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?) AS joined
+      FROM conversations c
+      WHERE c.channel_type = 'channel'
+        AND (c.is_public = 1 OR EXISTS(SELECT 1 FROM conversation_members cm WHERE cm.conversation_id = c.id AND cm.user_id = ?))
+      ORDER BY c.updated_at DESC, c.created_at DESC
+      LIMIT 100
+      `,
+      [currentId, currentId]
+    );
+    res.json({
+      channels: (rows || []).map((r) => ({
+        ...r,
+        is_public: Boolean(Number(r.is_public)),
+        joined: Boolean(r.joined),
+        member_count: Number(r.member_count || 0),
+        message_count: Number(r.message_count || 0),
+      })),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/channels', async (req, res) => {
+  try {
+    const currentId = getCurrentUserId(req);
+    const rawName = String(req.body?.name || '').trim().replace(/^#+/, '');
+    const slug = rawName
+      .toLowerCase()
+      .replace(/[^a-z0-9ğüşöçıİ\s_-]/gi, '')
+      .replace(/\s+/g, '-')
+      .slice(0, 32);
+    if (!slug || slug.length < 2) {
+      return res.status(400).json({ error: 'Kanal adı en az 2 karakter olmalıdır.' });
+    }
+    const topic = String(req.body?.topic || '').trim().slice(0, 140);
+    const isPublic = req.body?.isPublic !== false ? 1 : 0;
+    const memberIds = Array.isArray(req.body?.memberIds) ? req.body.memberIds : [];
+    const chId = 'ch_' + Date.now();
+    const now = new Date().toISOString();
+
+    await run(
+      `INSERT INTO conversations (id, name, avatar, is_group, channel_type, topic, is_public, created_by, created_at, updated_at)
+       VALUES (?, ?, '', 1, 'channel', ?, ?, ?, ?, ?)`,
+      [chId, slug, topic, isPublic, currentId, now, now]
+    );
+
+    const uniqueMembers = [...new Set([currentId, ...memberIds.map((m) => String(m)).filter(Boolean)])];
+    for (const uid of uniqueMembers) {
+      await run(`INSERT OR IGNORE INTO conversation_members (conversation_id, user_id) VALUES (?, ?)`, [chId, uid]);
+    }
+
+    const channel = {
+      id: chId,
+      name: slug,
+      topic,
+      is_group: true,
+      channel_type: 'channel',
+      is_public: Boolean(isPublic),
+      created_by: currentId,
+      member_count: uniqueMembers.length,
+      joined: true,
+      created_at: now,
+      updated_at: now,
+    };
+
+    const io = req.app.get('io');
+    if (io && isPublic) {
+      io.emit('channel_created', channel);
+    }
+    res.status(201).json({ success: true, channel });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/channels/:id/join', async (req, res) => {
+  try {
+    const currentId = getCurrentUserId(req);
+    const { id } = req.params;
+    const ch = await get(`SELECT * FROM conversations WHERE id = ? AND channel_type = 'channel'`, [id]);
+    if (!ch) return res.status(404).json({ error: 'Kanal bulunamadı.' });
+    if (!Number(ch.is_public)) {
+      const member = await get(`SELECT 1 FROM conversation_members WHERE conversation_id = ? AND user_id = ?`, [id, currentId]);
+      if (!member) return res.status(403).json({ error: 'Bu kanal gizlidir.' });
+    }
+    await run(`INSERT OR IGNORE INTO conversation_members (conversation_id, user_id) VALUES (?, ?)`, [id, currentId]);
+    res.json({ success: true, channelId: id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/channels/:id/leave', async (req, res) => {
+  try {
+    const currentId = getCurrentUserId(req);
+    const { id } = req.params;
+    await run(`DELETE FROM conversation_members WHERE conversation_id = ? AND user_id = ?`, [id, currentId]);
+    res.json({ success: true, channelId: id });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/messages/:id/react', async (req, res) => {
+  try {
+    const currentId = getCurrentUserId(req);
+    const { id } = req.params;
+    const emoji = String(req.body?.emoji || '').trim().slice(0, 8);
+    if (!emoji) return res.status(400).json({ error: 'Emoji zorunludur.' });
+
+    const msg = await get(`SELECT id, conversation_id, COALESCE(reactions, '{}') AS reactions FROM messages WHERE id = ?`, [id]);
+    if (!msg) return res.status(404).json({ error: 'Mesaj bulunamadı.' });
+
+    let reactions = {};
+    try {
+      reactions = JSON.parse(msg.reactions || '{}') || {};
+    } catch {}
+    const users = Array.isArray(reactions[emoji]) ? [...reactions[emoji]] : [];
+    const idx = users.indexOf(currentId);
+    if (idx >= 0) {
+      users.splice(idx, 1);
+    } else {
+      users.push(currentId);
+    }
+    if (users.length === 0) {
+      delete reactions[emoji];
+    } else {
+      reactions[emoji] = users;
+    }
+
+    await run(`UPDATE messages SET reactions = ? WHERE id = ?`, [JSON.stringify(reactions), id]);
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('message_reaction_updated', {
+        messageId: id,
+        conversationId: msg.conversation_id,
+        reactions,
+      });
+    }
+    res.json({ success: true, messageId: id, reactions });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/conversations/:id/pin', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const messageId = String(req.body?.messageId || '').trim();
+    const content = String(req.body?.content || '').trim().slice(0, 300);
+
+    await run(`UPDATE conversations SET pinned_message_id = ?, pinned_message_text = ? WHERE id = ?`, [
+      messageId,
+      content,
+      id,
+    ]);
+    const io = req.app.get('io');
+    if (io) {
+      io.emit('conversation_pinned_updated', {
+        conversationId: id,
+        pinned_message_id: messageId,
+        pinned_message_text: content,
+      });
+    }
+    res.json({ success: true, pinned_message_id: messageId, pinned_message_text: content });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }
@@ -920,6 +1126,7 @@ router.get('/conversations/:id/messages', async (req, res) => {
     let messages = await all(
       `
       SELECT m.id, m.conversation_id, m.sender_id, m.content, m.status, m.created_at,
+             COALESCE(m.reactions, '{}') as reactions,
              u.name as sender_name, u.avatar as sender_avatar
       FROM messages m
       JOIN users u ON m.sender_id = u.id
@@ -928,6 +1135,13 @@ router.get('/conversations/:id/messages', async (req, res) => {
     `,
       [conversationId]
     );
+    messages = (messages || []).map((m) => {
+      let parsedReactions = {};
+      try {
+        parsedReactions = typeof m.reactions === 'string' ? JSON.parse(m.reactions || '{}') : (m.reactions || {});
+      } catch {}
+      return { ...m, reactions: parsedReactions };
+    });
 
     res.json({ messages });
   } catch (err) {
