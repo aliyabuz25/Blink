@@ -1238,18 +1238,17 @@ router.get('/music/search', async (req, res) => {
   }
 });
 
-// AAA Ultra-HD WebRTC ICE & Media Profile Configuration
+// AAA Discord-Grade Adaptive WebRTC ICE + Turkey/EU TURN Proxy Configuration
 router.get('/webrtc/config', (req, res) => {
+  const forceRelay = req.query.relay === '1' || req.query.relay === 'true';
   const iceServers = [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun3.l.google.com:19302' },
-    { urls: 'stun:stun4.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.relay.metered.ca:80' },
   ];
 
-  // Optional production TURN server from environment variables
+  // Priority 1: Dedicated Turkey/EU TURN Proxy from environment variables
   if (process.env.TURN_URLS) {
     const urls = process.env.TURN_URLS.split(',').map((u) => u.trim()).filter(Boolean);
     if (urls.length > 0) {
@@ -1261,20 +1260,32 @@ router.get('/webrtc/config', (req, res) => {
     }
   }
 
+  // Priority 2: Reliable public TCP-443/TLS + UDP TURN relay proxy fallback (bypasses TR CGNAT & UDP throttling)
+  iceServers.push(
+    {
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+        'turns:openrelay.metered.ca:443?transport=tcp',
+      ],
+      username: 'openrelayproject',
+      credential: 'openrelayproject',
+    }
+  );
+
   res.json({
     iceServers,
+    iceTransportPolicy: forceRelay ? 'relay' : 'all',
     iceCandidatePoolSize: 10,
     bundlePolicy: 'max-bundle',
     rtcpMuxPolicy: 'require',
-    hdProfile: {
-      width: 1920,
-      height: 1080,
-      frameRate: 60,
-      maxVideoBitrate: 4500000,
-      minVideoBitrate: 1200000,
-      startVideoBitrate: 2500000,
-      maxAudioBitrate: 128000,
-      degradationPreference: 'maintain-resolution',
+    region: 'eu-tr-auto',
+    adaptiveTiers: {
+      ultra: { maxBitrate: 3000000, maxFramerate: 60, scaleDown: 1.0, label: 'Ultra' },
+      hd: { maxBitrate: 1500000, maxFramerate: 30, scaleDown: 1.0, label: 'HD' },
+      balanced: { maxBitrate: 750000, maxFramerate: 24, scaleDown: 1.5, label: 'Auto' },
+      smooth: { maxBitrate: 350000, maxFramerate: 20, scaleDown: 2.0, label: 'Smooth' },
     },
   });
 });
