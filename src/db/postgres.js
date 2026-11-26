@@ -221,6 +221,46 @@ async function initDatabase() {
     console.log('🛡️ [Admin] Default admin seeded (username: admin)');
   }
 
+  // Admin Panel .htaccess Host Access Control tables
+  await run(`
+    CREATE TABLE IF NOT EXISTS admin_access_hosts (
+      id VARCHAR(255) PRIMARY KEY,
+      label VARCHAR(255) DEFAULT '',
+      ip_address VARCHAR(128) NOT NULL,
+      user_agent TEXT DEFAULT '',
+      screen_resolution VARCHAR(64) DEFAULT '',
+      enabled INTEGER DEFAULT 1,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+
+  await run(`
+    CREATE TABLE IF NOT EXISTS admin_access_settings (
+      key VARCHAR(64) PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+  `);
+
+  const existingHostCount = await get(`SELECT COUNT(*)::int AS cnt FROM admin_access_hosts`);
+  if (!existingHostCount || Number(existingHostCount.cnt) === 0) {
+    await run(
+      `INSERT INTO admin_access_hosts (id, label, ip_address, user_agent, screen_resolution, enabled) VALUES (?, ?, ?, ?, ?, ?)`,
+      [
+        'host_primary_mac',
+        'Primary Admin Host (Mac)',
+        '212.154.66.176',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/158.0.0.0 Safari/537.36',
+        '1710x1107',
+        1,
+      ]
+    );
+    await run(`INSERT OR IGNORE INTO admin_access_settings (key, value) VALUES (?, ?)`, ['enforce_htaccess', '1']);
+    await run(`INSERT OR IGNORE INTO admin_access_settings (key, value) VALUES (?, ?)`, ['check_ip', '1']);
+    await run(`INSERT OR IGNORE INTO admin_access_settings (key, value) VALUES (?, ?)`, ['check_ua', '1']);
+    await run(`INSERT OR IGNORE INTO admin_access_settings (key, value) VALUES (?, ?)`, ['check_screen', '1']);
+    console.log('🔒 [Admin .htaccess] Seeded primary allowed host (212.154.66.176 / 1710x1107)');
+  }
+
   const user = await get(`SELECT id FROM users WHERE id = 'usr_boombot';`);
   if (!user) {
     await seedRealData();

@@ -3,6 +3,14 @@ const crypto = require('crypto');
 const router = express.Router();
 const { run, get, all, hashPassword, verifyPassword } = require('../db/postgres');
 const whatsappService = require('../services/whatsapp');
+const {
+  invalidateAccessCache,
+  normalizeIp,
+  normalizeResolution,
+  getRequestFingerprint,
+  loadAccessPolicy,
+  generateHtaccessSnippet,
+} = require('../services/adminAccess');
 
 const ADMIN_SECRET = process.env.JWT_SECRET || 'blink_admin_secret_key_2026';
 
@@ -381,6 +389,158 @@ router.delete('/messages/:id', requireAdmin, async (req, res) => {
       io.to(`conv_${msg.conversation_id}`).emit('message_deleted', { messageId: id, conversationId: msg.conversation_id });
     }
     res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// =========================================================
+// ADMIN .HTACCESS HOST ACCESS CONTROL (IP + UA + RESOLUTION)
+// =========================================================
+router.get('/access/check', (req, res) => {
+  res.json({
+    allowed: true,
+    detected: req.adminFingerprint || getRequestFingerprint(req),
+  });
+});
+
+router.get('/access', requireAdmin, async (req, res) => {
+  try {
+    const { settings, hosts } = await loadAccessPolicy();
+    const detected = req.adminFingerprint || getRequestFingerprint(req);
+    res.json({
+      settings,
+      hosts,
+      detected,
+      htaccess: generateHtaccessSnippet(hosts, settings),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/access/settings', requireAdmin, async (req, res) => {
+  try {
+    const keys = ['enforce_htaccess', 'check_ip', 'check_ua', 'check_screen'];
+    for (const k of keys) {
+      if (req.body[k] !== undefined) {
+        const val = req.body[k] ? '1' : '0';
+        await run(
+          `INSERT INTO admin_access_settings (key, value) VALUES (?, ?)
+           ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value`,
+          [k, val]
+        );
+      }
+    }
+    invalidateAccessCache();
+    const { settings, hosts } = await loadAccessPolicy();
+    res.json({
+      success: true,
+      settings,
+      htaccess: generateHtaccessSnippet(hosts, settings),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.post('/access/hosts', requireAdmin, async (req, res) => {
+  try {
+    const label = String(req.body?.label || '').trim() || 'Allowed Host';
+    const ipAddress = req.body?.ip_address === '*' ? '*' : normalizeIp(req.body?.ip_address || '');
+    const userAgent = String(req.body?.user_agent || '').trim();
+    const screenRes =
+      req.body?.screen_resolution === '*'
+        ? '*'
+        : normalizeResolution(req.body?.screen_resolution || '');
+
+    if (!ipAddress) {
+      return res.status(400).json({ error: 'IP adresi (veya *) zorunludur.' });
+    }
+
+    const id = 'host_' + Date.now();
+    await run(
+      `INSERT INTO admin_access_hosts (id, label, ip_address, user_agent, screen_resolution, enabled) VALUES (?, ?, ?, ?, ?, 1)`,
+      [id, label, ipAddress, userAgent, screenRes]
+    );
+    invalidateAccessCache();
+    const { settings, hosts } = await loadAccessPolicy();
+    res.status(201).json({
+      success: true,
+      hosts,
+      htaccess: generateHtaccessSnippet(hosts, settings),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.patch('/access/hosts/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const existing = await get(`SELECT * FROM admin_access_hosts WHERE id = ?`, [id]);
+    if (!existing) return res.status(404).json({ error: 'Host kaydı bulunamadı.' });
+
+    const label = req.body.label !== undefined ? String(req.body.label).trim() : existing.label;
+    const ipAddress =
+      req.body.ip_address !== undefined
+        ? req.body.ip_address === '*'
+          ? '*'
+          : normalizeIp(req.body.ip_address)
+        : existing.ip_address;
+    const userAgent = req.body.user_agent !== undefined ? String(req.body.user_agent).trim() : existing.user_agent;
+    const screenRes =
+      req.body.screen_resolution !== undefined
+        ? req.body.screen_resolution === '*'
+          ? '*'
+          : normalizeResolution(req.body.screen_resolution)
+        : existing.screen_resolution;
+    const enabled = req.body.enabled !== undefined ? (req.body.enabled ? 1 : 0) : existing.enabled;
+
+    if (!enabled) {
+      const { settings, hosts } = await loadAccessPolicy();
+      const otherActive = hosts.filter((h) => h.id !== id && Number(h.enabled));
+      if (settings.enforce_htaccess && otherActive.length === 0) {
+        return res.status(400).json({
+          error: 'Koruma açıkken son aktif host devre dışı bırakılamaz.',
+        });
+      }
+    }
+
+    await run(
+      `UPDATE admin_access_hosts SET label = ?, ip_address = ?, user_agent = ?, screen_resolution = ?, enabled = ? WHERE id = ?`,
+      [label, ipAddress, userAgent, screenRes, enabled, id]
+    );
+    invalidateAccessCache();
+    const { settings, hosts } = await loadAccessPolicy();
+    res.json({
+      success: true,
+      hosts,
+      htaccess: generateHtaccessSnippet(hosts, settings),
+    });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+router.delete('/access/hosts/:id', requireAdmin, async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { settings, hosts } = await loadAccessPolicy();
+    const remainingActive = hosts.filter((h) => h.id !== id && Number(h.enabled));
+    if (settings.enforce_htaccess && remainingActive.length === 0) {
+      return res.status(400).json({
+        error: 'Koruma açıkken son aktif host silinemez (kilitlenmeyi önlemek için önce başka host ekleyin veya korumayı kapatın).',
+      });
+    }
+    await run(`DELETE FROM admin_access_hosts WHERE id = ?`, [id]);
+    invalidateAccessCache();
+    const updated = await loadAccessPolicy();
+    res.json({
+      success: true,
+      hosts: updated.hosts,
+      htaccess: generateHtaccessSnippet(updated.hosts, updated.settings),
+    });
   } catch (err) {
     res.status(500).json({ error: err.message });
   }

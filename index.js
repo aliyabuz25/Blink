@@ -12,9 +12,11 @@ const redisModule = require('./src/db/redis');
 const { triggerBoomBotReply } = require('./src/services/boombot');
 const apiRouter = require('./src/routes/api');
 const adminRouter = require('./src/routes/admin');
+const { adminPageGate, adminApiGate } = require('./src/services/adminAccess');
 const whatsappService = require('./src/services/whatsapp');
 
 const app = express();
+app.set('trust proxy', true);
 const server = http.createServer(app);
 
 const PORT = parseInt(process.env.PORT || '3000', 10);
@@ -56,7 +58,7 @@ app.use(cors({
   origin: (origin, callback) => callback(null, isOriginAllowed(origin)),
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'x-user-id']
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin', 'x-user-id', 'x-admin-screen', 'x-admin-viewport']
 }));
 
 app.use(express.json({ limit: '20mb' }));
@@ -101,12 +103,12 @@ app.get('/health', (req, res) => {
   });
 });
 
-// REST API & Admin API routes
-app.use('/api/admin', adminRouter);
+// REST API & Admin API routes (protected by .htaccess host/browser/resolution gate)
+app.use('/api/admin', adminApiGate, adminRouter);
 app.use('/api', apiRouter);
 
-// React (shadcn-admin) Admin Panel served from ./webapp/admin.html
-app.get(['/admin', '/admin/'], (req, res) => {
+// React (shadcn-admin) Admin Panel served from ./webapp/admin.html (protected by .htaccess gate)
+app.get(['/admin', '/admin/', '/admin.html'], adminPageGate, (req, res) => {
   const reactAdminHtml = path.resolve(__dirname, 'webapp', 'admin.html');
   if (fs.existsSync(reactAdminHtml)) {
     res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
