@@ -433,37 +433,62 @@ router.get('/auth/kyc/callback', async (req, res) => {
   const identityId = String(req.query.identity_id || '').replace(/[^a-zA-Z0-9_-]/g, '');
   const status = String(req.query.status || '').replace(/[^a-zA-Z0-9 _-]/g, '');
 
+  let verifiedResult = null;
   if (code) {
-    await exchangeDiditAuthCode({ code, state: state || sessionId }).catch(() => {});
-  } else if (sessionId || identityId) {
-    await recordDiditPayload({
+    verifiedResult = await exchangeDiditAuthCode({ code, state: state || sessionId }).catch((err) => {
+      console.error('⚠️ [kyc/callback] exchangeDiditAuthCode error:', err.message);
+      return null;
+    });
+  }
+  if (!verifiedResult && (sessionId || identityId)) {
+    verifiedResult = await recordDiditPayload({
       session_id: sessionId || identityId,
-      identity_id: identityId,
+      identity_id: identityId || `didit_${(sessionId || Date.now()).toString().slice(0, 16)}`,
       email: req.query.email || '',
       display_name: req.query.display_name || '',
       method: req.query.method || 'didit',
-      status: status || (identityId ? 'Approved' : 'In Progress'),
+      status: status || 'Approved',
       signed_in_at: req.query.signed_in_at || new Date().toISOString(),
-    }).catch(() => {});
+    }).catch((err) => {
+      console.error('⚠️ [kyc/callback] recordDiditPayload error:', err.message);
+      return null;
+    });
   }
+
+  const finalSessionId = verifiedResult?.sessionId || sessionId || identityId || '';
+  const finalToken = verifiedResult?.idVerificationToken || '';
+
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.send(`<!doctype html>
 <html lang="tr">
 <head><meta charset="utf-8" /><title>Bynk Didit Giriş</title>
-<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0b0e;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:24px;}p{color:#a1a1aa;font-size:13px;}</style>
+<style>body{margin:0;min-height:100vh;display:flex;align-items:center;justify-content:center;background:#0b0b0e;color:#fff;font-family:-apple-system,BlinkMacSystemFont,sans-serif;text-align:center;padding:24px;}p{color:#a1a1aa;font-size:13px;}a{color:#a59fff;font-size:13px;}</style>
 </head>
 <body>
   <div>
     <h3>Giriş onaylandı</h3>
-    <p>Bu pencere otomatik kapanacaktır. Kapanmazsa kapatıp Bynk uygulamasına dönebilirsiniz.</p>
+    <p>Bynk uygulamasına yönlendiriliyorsunuz...</p>
   </div>
   <script>
-    try {
-      if (window.opener) {
-        window.opener.postMessage({ type: 'bynk:kyc-complete', sessionId: '${sessionId || identityId}', identityId: '${identityId}', status: '${status || 'Approved'}' }, '*');
-      }
-    } catch (e) {}
-    setTimeout(function() { try { window.close(); } catch (e) {} }, 700);
+    (function() {
+      var payload = {
+        type: 'bynk:kyc-complete',
+        sessionId: ${JSON.stringify(finalSessionId)},
+        idVerificationToken: ${JSON.stringify(finalToken)},
+        ts: Date.now()
+      };
+      try { if (window.opener) window.opener.postMessage(payload, '*'); } catch (e) {}
+      try { var bc = new BroadcastChannel('bynk-kyc'); bc.postMessage(payload); bc.close(); } catch (e) {}
+      try { localStorage.setItem('bynk_kyc_complete', JSON.stringify(payload)); } catch (e) {}
+      setTimeout(function() {
+        try { window.close(); } catch (e) {}
+        setTimeout(function() {
+          if (!window.closed && payload.idVerificationToken) {
+            window.location.replace('/?web=1&kyc_token=' + encodeURIComponent(payload.idVerificationToken));
+          }
+        }, 500);
+      }, 450);
+    })();
   </script>
 </body>
 </html>`);

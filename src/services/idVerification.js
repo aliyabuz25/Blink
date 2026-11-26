@@ -21,8 +21,9 @@ function decodeIssuerFromPublishableKey(pk) {
   }
 }
 
-// Short-lived PKCE verifier store keyed by OAuth state
+// Short-lived PKCE verifier store & instant completed-session cache keyed by state/sessionId
 const pkceStore = new Map();
+const completedSessions = new Map();
 let kycCache = { ts: 0, config: null };
 
 function invalidateKycCache() {
@@ -350,21 +351,25 @@ async function recordDiditPayload(payload = {}) {
   );
   const signedInAt = payload.signed_in_at || new Date().toISOString();
 
-  await run(
-    `INSERT INTO kyc_sessions (session_id, identity_id, email, display_name, method, status, doc_type, masked_id, signed_in_at, raw_payload)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-     ON CONFLICT (session_id) DO UPDATE SET
-       identity_id = EXCLUDED.identity_id,
-       email = EXCLUDED.email,
-       display_name = EXCLUDED.display_name,
-       method = EXCLUDED.method,
-       status = EXCLUDED.status,
-       doc_type = EXCLUDED.doc_type,
-       masked_id = EXCLUDED.masked_id,
-       signed_in_at = EXCLUDED.signed_in_at,
-       raw_payload = EXCLUDED.raw_payload`,
-    [sessionId, identityId, email, displayName, method, rawStatus, docType, maskedId, signedInAt, JSON.stringify(payload).slice(0, 4000)]
-  );
+  try {
+    await run(
+      `INSERT INTO kyc_sessions (session_id, identity_id, email, display_name, method, status, doc_type, masked_id, signed_in_at, raw_payload)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON CONFLICT (session_id) DO UPDATE SET
+         identity_id = EXCLUDED.identity_id,
+         email = EXCLUDED.email,
+         display_name = EXCLUDED.display_name,
+         method = EXCLUDED.method,
+         status = EXCLUDED.status,
+         doc_type = EXCLUDED.doc_type,
+         masked_id = EXCLUDED.masked_id,
+         signed_in_at = EXCLUDED.signed_in_at,
+         raw_payload = EXCLUDED.raw_payload`,
+      [sessionId, identityId, email, displayName, method, rawStatus, docType, maskedId, signedInAt, JSON.stringify(payload).slice(0, 4000)]
+    );
+  } catch (err) {
+    console.error('⚠️ [recordDiditPayload] DB write failed (using memory fallback):', err.message);
+  }
 
   const isApproved = rawStatus.toLowerCase() === 'approved' || Boolean(identityId);
   const idVerificationToken = isApproved
@@ -379,7 +384,7 @@ async function recordDiditPayload(payload = {}) {
       })
     : null;
 
-  return {
+  const result = {
     verified: isApproved,
     sessionId,
     identityId,
@@ -390,10 +395,22 @@ async function recordDiditPayload(payload = {}) {
     status: rawStatus,
     idVerificationToken,
   };
+
+  if (isApproved) {
+    completedSessions.set(sessionId, { ...result, savedAt: Date.now() });
+    if (identityId) completedSessions.set(identityId, { ...result, savedAt: Date.now() });
+  }
+
+  return result;
 }
 
-// Query Didit Session Status (checks local PKCE/webhook/callback cache first, then v3 API if configured)
+// Query Didit Session Status (checks instant memory cache -> DB -> v3 API)
 async function getDiditSessionStatus(sessionId) {
+  const mem = completedSessions.get(sessionId);
+  if (mem && mem.verified && mem.idVerificationToken) {
+    return mem;
+  }
+
   const stored = await get(`SELECT * FROM kyc_sessions WHERE session_id = ? OR identity_id = ?`, [sessionId, sessionId]).catch(() => null);
   if (stored && (String(stored.status || '').toLowerCase() === 'approved' || stored.identity_id)) {
     const idVerificationToken = signIdVerificationToken({
